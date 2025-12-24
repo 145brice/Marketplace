@@ -14,7 +14,7 @@ let intervalHandle = null;
 let notifyConfig = { webhookUrl: '', phoneNumber: '', enabled: false };
 
 function toCSV(rows) {
-  const headers = ['title', 'price', 'priceNumber', 'model', 'soldLast30', 'avgSold', 'marginFromAvg', 'profitRange', 'link'];
+  const headers = ['title', 'price', 'priceNumber', 'model', 'soldLast30', 'avgSold', 'marginFromAvg', 'profitRange', 'link', 'description'];
   const escapeCSV = (v) => {
     if (v === null || v === undefined) return '';
     const s = String(v);
@@ -32,7 +32,8 @@ function toCSV(rows) {
       r.soldHistory ? r.soldHistory.avg : '',
       r.marginFromAvg != null ? r.marginFromAvg.toFixed(1) : '',
       r.profitRange || '',
-      r.link || ''
+      r.link || '',
+      r.description || ''
     ].map(escapeCSV).join(','));
   }
   return lines.join('\r\n');
@@ -112,8 +113,8 @@ async function fetchSoldHistory(models, page) {
   for (const model of models) {
     if (!model) continue;
     try {
-      // Try Facebook Marketplace sold search
-      const searchUrl = `https://www.facebook.com/marketplace/search/?query=${encodeURIComponent(model)}&exact=false`;
+      // Try Facebook Marketplace sold search with Nashville location
+      const searchUrl = `https://www.facebook.com/marketplace/search/?query=${encodeURIComponent(model)}&exact=false&location=37138&radius=50`;
       await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
       
       // Scroll and gather prices (best-effort; Marketplace often hides sold badge)
@@ -165,18 +166,44 @@ async function fetchSoldHistory(models, page) {
 }
 
 async function runScrape(params) {
+  const emitProgress = (stage, progress, message) => {
+    if (global.progressClients) {
+      global.progressClients.forEach(client => {
+        try {
+          client(stage, progress, message);
+        } catch (e) {
+          // Client disconnected
+        }
+      });
+    }
+  };
+
   const limit = Math.max(1, Math.min(100, parseInt(params.limit || '10', 10)));
   const keywords = (params.keywords || '').trim();
+  const location = (params.location || '').trim();
+  // Force Nashville location with coordinates
+  const nashvilleCoords = '36.1627,-86.7816'; // Nashville, TN coordinates
+  const baseUrl = 'https://www.facebook.com/marketplace';
   const targetUrl = keywords
-    ? `https://www.facebook.com/marketplace/search/?query=${encodeURIComponent(keywords)}`
-    : 'https://www.facebook.com/marketplace/category/riding-lawn-mowers';
+    ? `${baseUrl}/search/?query=${encodeURIComponent(keywords)}&latitude=${nashvilleCoords.split(',')[0]}&longitude=${nashvilleCoords.split(',')[1]}&radius=50`
+    : `${baseUrl}/category/riding-lawn-mowers?latitude=${nashvilleCoords.split(',')[0]}&longitude=${nashvilleCoords.split(',')[1]}&radius=50`;
+  console.log('Target URL:', targetUrl); // Debug logging
   const minPrice = isFinite(Number(params.minPrice)) ? Number(params.minPrice) : null;
   const maxPrice = isFinite(Number(params.maxPrice)) ? Number(params.maxPrice) : null;
+  const titleKeywords = (params.titleKeywords || '').trim();
+  const descriptionKeywords = (params.descriptionKeywords || '').trim();
 
   let deals = [];
   try {
+    emitProgress('starting', 0, 'Launching browser...');
     currentBrowser = await puppeteer.launch({ headless: false });
     const page = await currentBrowser.newPage();
+    
+    // Set user agent to look more like a real browser
+    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    
+    // Set viewport
+    await page.setViewport({ width: 1280, height: 720 });
 
     // Apply cookies from cookies.json
     try {
@@ -188,8 +215,60 @@ async function runScrape(params) {
       // No cookies provided or invalid; continue anyway
     }
 
+    emitProgress('loading', 10, 'Loading marketplace page...');
     await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 120000 });
+    
+    // Debug: Check what location Facebook detected
+    try {
+      const detectedLocation = await page.evaluate(() => {
+        // Try to find location info on the page
+        const locationElements = document.querySelectorAll('[data-testid*="location"], [aria-label*="location"], .location');
+        for (const el of locationElements) {
+          if (el.textContent && el.textContent.length > 3) {
+            return el.textContent.trim();
+          }
+        }
+        // Check URL for location
+        if (window.location.href.includes('/marketplace/')) {
+          const match = window.location.href.match(/\/marketplace\/([^\/]+)/);
+          return match ? match[1] : 'unknown';
+        }
+        return 'unknown';
+      });
+      console.log('Facebook detected location:', detectedLocation);
+      
+      // If location is not Nashville-related, try to force it
+      if (!detectedLocation.toLowerCase().includes('nashville') && 
+          !detectedLocation.toLowerCase().includes('tennessee') && 
+          !detectedLocation.toLowerCase().includes('37138')) {
+        console.log('Location not Nashville, attempting to force Nashville location...');
+        
+        // Try to set location via URL parameters
+        const nashvilleUrl = `${targetUrl}&latitude=36.1627&longitude=-86.7816&radius=50`;
+        console.log('Redirecting to Nashville URL:', nashvilleUrl);
+        await page.goto(nashvilleUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        
+        // Check location again
+        const newDetectedLocation = await page.evaluate(() => {
+          const locationElements = document.querySelectorAll('[data-testid*="location"], [aria-label*="location"], .location');
+          for (const el of locationElements) {
+            if (el.textContent && el.textContent.length > 3) {
+              return el.textContent.trim();
+            }
+          }
+          return 'unknown';
+        });
+        console.log('Location after redirect:', newDetectedLocation);
+        emitProgress('loading', 15, `Loading marketplace page... (Location: ${newDetectedLocation})`);
+      } else {
+        emitProgress('loading', 15, `Loading marketplace page... (Location: ${detectedLocation})`);
+      }
+    } catch (e) {
+      console.log('Could not detect/correct location:', e.message);
+    }
 
+    emitProgress('scrolling', 20, 'Loading more listings...');
     // Try to scroll a bit to load items
     try {
       await page.evaluate(async (desired) => {
@@ -202,6 +281,7 @@ async function runScrape(params) {
       }, limit);
     } catch (_) {}
 
+    emitProgress('extracting', 30, 'Extracting listing data...');
     deals = await page.evaluate((desired) => {
       const anchors = Array.from(document.querySelectorAll('a[href*="/marketplace/item/"]'));
       const uniq = new Map();
@@ -227,6 +307,78 @@ async function runScrape(params) {
       return items;
     }, limit);
 
+    // Extract descriptions from individual listings
+    emitProgress('descriptions', 40, `Extracting descriptions (0/${deals.length})...`);
+    for (let i = 0; i < deals.length; i++) {
+      const deal = deals[i];
+      try {
+        emitProgress('descriptions', 40 + (i / deals.length) * 30, `Extracting descriptions (${i + 1}/${deals.length})...`);
+        const listingPage = await browser.newPage();
+        // Apply cookies if available
+        try {
+          const cookies = JSON.parse(fs.readFileSync(path.join(__dirname, 'cookies.json'), 'utf8'));
+          if (Array.isArray(cookies) && cookies.length) {
+            await listingPage.setCookie(...cookies);
+          }
+        } catch (err) {
+          // No cookies
+        }
+        await listingPage.goto(deal.link, { waitUntil: 'networkidle2', timeout: 30000 });
+        const description = await listingPage.evaluate(() => {
+          // Attempt to find the description element on Facebook Marketplace listing
+          const descSelectors = [
+            'div[data-testid="marketplace-listing-description"]',
+            'span[data-ad-preview="message"]',
+            'div[data-pagelet="MainColumn"] span[dir="auto"]',
+            'div[role="main"] span',
+            'p[dir="auto"]'
+          ];
+          for (const selector of descSelectors) {
+            const el = document.querySelector(selector);
+            if (el && el.innerText && el.innerText.length > 10) {
+              return el.innerText.trim();
+            }
+          }
+          return '';
+        });
+        deal.description = description;
+        await listingPage.close();
+      } catch (e) {
+        deal.description = '';
+      }
+    }
+
+    // Filter based on description content
+    deals = deals.filter(d => {
+      const desc = (d.description || '').toLowerCase();
+      // Exclude listings that are clearly parts only or broken
+      if (desc.includes('parts only') || desc.includes('for parts') || desc.includes('not working') || desc.includes('broken') || desc.includes('needs repair')) {
+        return false;
+      }
+      return true;
+    });
+
+    emitProgress('filtering', 75, 'Filtering results...');
+    // Filter based on title and description keywords
+    if (titleKeywords) {
+      const titleKeys = titleKeywords.split(',').map(k => k.trim().toLowerCase()).filter(k => k);
+      if (titleKeys.length > 0) {
+        deals = deals.filter(d => {
+          const title = (d.title || '').toLowerCase();
+          return titleKeys.some(key => title.includes(key));
+        });
+      }
+    }
+    if (descriptionKeywords) {
+      const descKeys = descriptionKeywords.split(',').map(k => k.trim().toLowerCase()).filter(k => k);
+      if (descKeys.length > 0) {
+        deals = deals.filter(d => {
+          const desc = (d.description || '').toLowerCase();
+          return descKeys.some(key => desc.includes(key));
+        });
+      }
+    }
+
     // Clean and filter results server-side
     const parsePriceNumber = (txt) => {
       if (!txt || typeof txt !== 'string') return null;
@@ -246,6 +398,7 @@ async function runScrape(params) {
       })
       .slice(0, limit);
 
+    emitProgress('processing', 85, 'Processing sold history...');
     // Extract models and fetch sold history
     const models = deals.map(d => extractModel(d.title)).filter(Boolean);
     const soldHistory = await fetchSoldHistory([...new Set(models)], page);
@@ -272,8 +425,11 @@ async function runScrape(params) {
       };
     }).sort((a, b) => (b.marginFromAvg || -Infinity) - (a.marginFromAvg || -Infinity));
 
+    emitProgress('saving', 95, 'Saving results...');
     saveResults(deals, { ...params, url: targetUrl });
     sendNotification(deals);
+    
+    emitProgress('complete', 100, `Completed! Found ${deals.length} deals`);
   } finally {
     try {
       if (currentBrowser) await currentBrowser.close();
@@ -431,6 +587,16 @@ const server = http.createServer((req, res) => {
             </div>
 
             <div class="form-group">
+              <label for="location">Location (zip code for best results)</label>
+              <input type="text" id="location" name="location" placeholder="e.g., 37138, 90210, newyork">
+            </div>
+
+            <div class="form-group">
+              <button type="button" onclick="captureCookies()" style="padding:8px 12px;background:#28a745;color:white;border:none;border-radius:6px;cursor:pointer;">📍 Set Location & Capture Cookies</button>
+              <span id="cookieStatus" style="margin-left:10px;color:#666;font-size:13px"></span>
+            </div>
+
+            <div class="form-group">
               <label for="radius">Search Radius (miles)</label>
               <input type="number" id="radius" name="radius" placeholder="25" value="25" min="1" max="100">
             </div>
@@ -448,6 +614,16 @@ const server = http.createServer((req, res) => {
             <div class="form-group">
               <label for="limit">Results Limit</label>
               <input type="number" id="limit" name="limit" placeholder="10" value="10" min="1" max="100">
+            </div>
+
+            <div class="form-group">
+              <label for="titleKeywords">Title Keywords (comma-separated, optional)</label>
+              <input type="text" id="titleKeywords" name="titleKeywords" placeholder="e.g., john deere, husqvarna">
+            </div>
+
+            <div class="form-group">
+              <label for="descriptionKeywords">Description Keywords (comma-separated, optional)</label>
+              <input type="text" id="descriptionKeywords" name="descriptionKeywords" placeholder="e.g., running, good condition">
             </div>
 
             <div class="form-group">
@@ -502,6 +678,7 @@ const server = http.createServer((req, res) => {
                     <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Avg Sold</th>
                     <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Margin %</th>
                     <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Profit</th>
+                    <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Description</th>
                     <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Link</th>
                   </tr>
                 </thead>
@@ -523,7 +700,7 @@ const server = http.createServer((req, res) => {
             if (deals.length === 0) {
               const tr = document.createElement('tr');
               const td = document.createElement('td');
-              td.colSpan = 7;
+              td.colSpan = 8;
               td.style.color = '#666';
               td.style.padding = '12px';
               td.textContent = 'No results yet.';
@@ -605,6 +782,16 @@ const server = http.createServer((req, res) => {
                   tdProfit.textContent = 'no data';
                 }
                 tr.appendChild(tdProfit);
+
+                const tdDescription = document.createElement('td');
+                tdDescription.style.padding = '10px';
+                tdDescription.style.borderBottom = '1px solid #f0f0f0';
+                tdDescription.style.fontSize = '12px';
+                tdDescription.style.color = '#666';
+                tdDescription.style.maxWidth = '200px';
+                tdDescription.style.wordWrap = 'break-word';
+                tdDescription.textContent = (d.description || '').substring(0, 150) + ((d.description || '').length > 150 ? '...' : '');
+                tr.appendChild(tdDescription);
 
                 const tdLink = document.createElement('td');
                 tdLink.style.padding = '10px';
@@ -743,6 +930,27 @@ const server = http.createServer((req, res) => {
                 statusEl.textContent = '✗ Failed to save settings';
               });
           }
+
+          async function captureCookies() {
+            const statusEl = document.getElementById('cookieStatus');
+            statusEl.textContent = 'Opening Facebook Marketplace...';
+            
+            try {
+              const response = await fetch('/api/capture-location', { method: 'POST' });
+              const data = await response.json();
+              
+              if (data.success) {
+                statusEl.style.color = '#28a745';
+                statusEl.textContent = '✓ Location and cookies saved!';
+              } else {
+                statusEl.style.color = '#dc3545';
+                statusEl.textContent = '✗ ' + (data.error || 'Failed to capture location');
+              }
+            } catch (err) {
+              statusEl.style.color = '#dc3545';
+              statusEl.textContent = '✗ Error: ' + err.message;
+            }
+          }
         </script>
       </body>
       </html>
@@ -814,6 +1022,531 @@ const server = http.createServer((req, res) => {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false, error: 'Invalid JSON' }));
       }
+    });
+  } else if (pathname === '/api/capture-cookies' && req.method === 'POST') {
+    (async () => {
+      try {
+        // Launch browser for cookie capture
+        const browser = await puppeteer.launch({ headless: false });
+        const page = await browser.newPage();
+        
+        // Set user agent and other properties to look more like a regular browser
+        await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        await page.setViewport({ width: 1280, height: 720 });
+        
+        // Try to avoid detection
+        await page.evaluateOnNewDocument(() => {
+          // Remove webdriver property
+          delete navigator.__proto__.webdriver;
+          // Mock languages and plugins
+          Object.defineProperty(navigator, 'languages', {
+            get: () => ['en-US', 'en'],
+          });
+          Object.defineProperty(navigator, 'plugins', {
+            get: () => [1, 2, 3, 4, 5],
+          });
+        });
+        
+        // Navigate to Facebook
+        console.log('Navigating to Facebook...');
+        try {
+          await page.goto('https://www.facebook.com', { waitUntil: 'networkidle2', timeout: 30000 });
+        } catch (navError) {
+          console.log('Navigation error:', navError.message);
+          // Continue anyway
+        }
+        
+        console.log('Facebook page loaded, current URL:', page.url());
+        
+        // Check if we got redirected or if there's an issue
+        const currentUrl = page.url();
+        console.log('Current URL check:', currentUrl);
+        
+        if (!currentUrl.includes('facebook.com') && !currentUrl.includes('localhost') && !currentUrl.includes('127.0.0.1')) {
+          console.log('Warning: Not on Facebook domain, but continuing...');
+        }
+        
+        // Show instructions
+        await page.evaluate(() => {
+          const div = document.createElement('div');
+          div.innerHTML = `
+            <div style="position:fixed;top:10px;left:10px;background:yellow;padding:15px;border:2px solid black;z-index:9999;font-size:14px;max-width:400px;">
+              <strong>Facebook Cookie & Location Setup</strong><br>
+              1. If asked for location permission, click "Allow"<br>
+              2. Navigate to Marketplace if needed<br>
+              3. This window will close automatically after setup completes.
+            </div>
+          `;
+          document.body.appendChild(div);
+        });
+        
+        // Wait for user to log in and grant location permission
+        console.log('Waiting for Facebook login and location setup...');
+        let loginDetected = false;
+        try {
+          await page.waitForFunction(() => {
+            // Check for various indicators of being logged in and having marketplace access
+            const feed = document.querySelector('[data-pagelet="Feed"]');
+            const main = document.querySelector('[role="main"]');
+            const marketplace = document.querySelector('[data-pagelet="Marketplace"]');
+            const urlHasMarketplace = window.location.href.includes('/marketplace');
+            const marketplaceLink = document.querySelector('a[href*="/marketplace"]');
+            const searchElements = document.querySelector('input[type="search"]') && document.querySelector('[data-visualcompletion="ignore-dynamic"]');
+            
+            const found = !!(feed || main || marketplace || urlHasMarketplace || marketplaceLink || searchElements);
+            
+            // Debug logging (only log when something changes)
+            if (found && !window._lastFound) {
+              console.log('Found login indicators:', { feed: !!feed, main: !!main, marketplace: !!marketplace, urlHasMarketplace, marketplaceLink: !!marketplaceLink, searchElements: !!searchElements });
+              window._lastFound = true;
+            }
+            
+            return found;
+          }, { timeout: 300000 }); // 5 minute timeout
+          loginDetected = true;
+          console.log('Login detected successfully');
+        } catch (e) {
+          console.log('Login detection timed out after 5 minutes, continuing with cookie capture...');
+        }
+        
+        // Give a moment for any location permissions to be processed
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        console.log('Capturing cookies...');
+        // Get cookies
+        const cookies = await page.cookies();
+        
+        console.log(`Captured ${cookies.length} cookies`);
+        // Save to file
+        fs.writeFileSync(path.join(__dirname, 'cookies.json'), JSON.stringify(cookies, null, 2));
+        
+        await browser.close();
+        
+        console.log('Cookies saved successfully');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    })();
+  } else if (pathname === '/api/capture-location' && req.method === 'POST') {
+    (async () => {
+      let browser;
+      try {
+        console.log('Starting location capture process...');
+        // Launch browser for location capture
+        browser = await puppeteer.launch({ headless: false });
+        const page = await browser.newPage();
+        
+        // Set user agent and other properties to look more like a regular browser
+        await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        await page.setViewport({ width: 1280, height: 720 });
+        
+        // Try to avoid detection
+        await page.evaluateOnNewDocument(() => {
+          // Remove webdriver property
+          delete navigator.__proto__.webdriver;
+          // Mock languages and plugins
+          Object.defineProperty(navigator, 'languages', {
+            get: () => ['en-US', 'en'],
+          });
+          Object.defineProperty(navigator, 'plugins', {
+            get: () => [1, 2, 3, 4, 5],
+          });
+        });
+        
+        console.log('Navigating to Facebook Marketplace...');
+        await page.goto('https://www.facebook.com/marketplace/', { waitUntil: 'networkidle2', timeout: 30000 });
+        
+        console.log('Waiting for page to settle...');
+        await new Promise(resolve => setTimeout(resolve, 4000));
+        
+        // Check if we're on a login page
+        const currentUrl = page.url();
+        console.log('Current URL:', currentUrl);
+        
+        // Check for login page indicators
+        const loginIndicators = [
+          'input[type="password"]',
+          'input[placeholder*="password" i]',
+          'input[name*="password" i]',
+          'input[placeholder*="email" i]',
+          'input[placeholder*="phone" i]',
+          '[data-testid*="login"]',
+          'form[action*="login"]',
+          'button[type="submit"]',
+          'input[aria-label*="password" i]'
+        ];
+        
+        let isLoginPage = false;
+        for (const indicator of loginIndicators) {
+          try {
+            const element = await page.$(indicator);
+            if (element) {
+              console.log('Found login indicator:', indicator);
+              isLoginPage = true;
+              break;
+            }
+          } catch (e) {}
+        }
+        
+        // Also check URL for login keywords
+        const loginUrlKeywords = ['login', 'checkpoint', 'auth', 'signin'];
+        const urlHasLogin = loginUrlKeywords.some(keyword => currentUrl.toLowerCase().includes(keyword));
+        
+        if (isLoginPage || urlHasLogin) {
+          console.log('Detected login page. Showing manual login instructions...');
+          
+          await page.evaluate(() => {
+            const div = document.createElement('div');
+            div.innerHTML = `
+              <div style="position:fixed;top:10px;left:10px;background:red;padding:20px;border:3px solid black;z-index:9999;font-size:16px;max-width:600px;color:white;">
+                <strong>LOGIN REQUIRED</strong><br><br>
+                <strong>Please log in to Facebook:</strong><br>
+                1. Enter your email/phone and password<br>
+                2. Click "Log In"<br>
+                3. If 2FA is required, complete it<br>
+                4. Navigate to Marketplace (if not redirected automatically)<br>
+                5. Set your location to 37138<br>
+                6. Close this browser window when done<br><br>
+                <em>The scraper will capture your cookies when you close the window.</em>
+              </div>
+            `;
+            document.body.appendChild(div);
+          });
+          
+          // Wait for user to log in and navigate to marketplace
+          console.log('Waiting for user to log in and navigate to marketplace...');
+          
+          // Monitor for successful login and marketplace navigation
+          let loggedIn = false;
+          
+          page.on('framenavigated', async (frame) => {
+            if (frame === page.mainFrame()) {
+              const url = frame.url();
+              console.log('Navigation detected:', url);
+              
+              if (url.includes('facebook.com/marketplace') && !url.includes('login')) {
+                console.log('Marketplace loaded, capturing cookies...');
+                
+                try {
+                  // Wait a moment for cookies to settle
+                  await new Promise(resolve => setTimeout(resolve, 2000));
+                  
+                  const cookies = await page.cookies();
+                  console.log(`Captured ${cookies.length} cookies`);
+                  
+                  // Check if we have authentication cookies
+                  const hasAuth = cookies.some(cookie => cookie.name === 'c_user' || cookie.name === 'xs');
+                  console.log('Has authentication cookies:', hasAuth);
+                  
+                  if (hasAuth) {
+                    fs.writeFileSync(path.join(__dirname, 'cookies.json'), JSON.stringify(cookies, null, 2));
+                    console.log('Authentication cookies saved successfully');
+                    
+                    // Show success message
+                    await page.evaluate(() => {
+                      const div = document.createElement('div');
+                      div.innerHTML = `
+                        <div style="position:fixed;top:10px;left:10px;background:green;padding:20px;border:3px solid darkgreen;z-index:9999;font-size:16px;color:white;">
+                          <strong>✅ COOKIES CAPTURED!</strong><br><br>
+                          You can now close this browser window.<br>
+                          The scraper will use your authenticated session.
+                        </div>
+                      `;
+                      document.body.appendChild(div);
+                    });
+                    
+                    loggedIn = true;
+                  } else {
+                    console.log('No authentication cookies found, waiting for proper login...');
+                  }
+                } catch (err) {
+                  console.error('Error capturing cookies:', err);
+                }
+              }
+            }
+          });
+          
+          // Wait for either successful login or timeout
+          const timeoutPromise = new Promise((resolve) => {
+            setTimeout(() => resolve('timeout'), 300000); // 5 minutes
+          });
+          
+          const loginPromise = new Promise((resolve) => {
+            const checkLogin = setInterval(async () => {
+              if (loggedIn) {
+                clearInterval(checkLogin);
+                resolve('logged_in');
+              }
+            }, 1000);
+          });
+          
+          const result = await Promise.race([loginPromise, timeoutPromise]);
+          
+          if (result === 'logged_in') {
+            console.log('Login successful, cookies captured');
+            // Keep browser open briefly so user can see success message
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            await browser.close();
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, method: 'login_detected' }));
+          } else {
+            console.log('Login timeout');
+            await browser.close();
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: 'Login timeout - no authentication detected' }));
+          }
+          return;
+        }
+        
+        // If we're not on login page, proceed with location setting
+        console.log('Not on login page, proceeding with location detection...');
+        
+        // First, let's see what location-related elements exist on the page
+        const allLocationElements = await page.$$('[placeholder*="location" i], [placeholder*="city" i], [placeholder*="zip" i], [aria-label*="location" i], [data-testid*="location"], input[type="text"]');
+        console.log(`Found ${allLocationElements.length} potential location elements`);
+        
+        // Log some details about these elements
+        for (let i = 0; i < Math.min(allLocationElements.length, 5); i++) {
+          try {
+            const element = allLocationElements[i];
+            const tagName = await page.evaluate(el => el.tagName, element);
+            const placeholder = await page.evaluate(el => el.placeholder || '', element);
+            const ariaLabel = await page.evaluate(el => el.getAttribute('aria-label') || '', element);
+            const className = await page.evaluate(el => el.className || '', element);
+            console.log(`Element ${i}: ${tagName} - placeholder: "${placeholder}" - aria-label: "${ariaLabel}" - class: "${className}"`);
+          } catch (e) {
+            console.log(`Error inspecting element ${i}:`, e.message);
+          }
+        }
+        
+        const locationSelectors = [
+          // Common Facebook Marketplace selectors
+          '[data-testid="marketplace-location-input"]',
+          '[data-testid*="location"] input',
+          '[role="combobox"][aria-label*="location" i]',
+          '[role="combobox"][placeholder*="location" i]',
+          'input[placeholder*="Where" i]',
+          'input[placeholder*="City" i]',
+          'input[placeholder*="ZIP" i]',
+          'input[aria-label*="location" i]',
+          'input[aria-label*="Location" i]',
+          'input[name*="location" i]',
+          // More generic selectors
+          'input[type="text"][placeholder*="location" i]',
+          'input[type="text"][placeholder*="city" i]',
+          'input[type="text"][placeholder*="zip" i]',
+          // Fallback - any input that might be location-related
+          'input[autocomplete*="address" i]',
+          'input[autocomplete*="postal-code" i]'
+        ];
+        
+        let locationInput = null;
+        for (const selector of locationSelectors) {
+          try {
+            locationInput = await page.$(selector);
+            if (locationInput) {
+              console.log('Found location input with selector:', selector);
+              break;
+            }
+          } catch (e) {
+            // Continue to next selector
+          }
+        }
+        
+        // If we still can't find it, try clicking on location-related buttons first
+        if (!locationInput) {
+          console.log('Trying to click location button to reveal input...');
+          const locationButtons = [
+            '[data-testid*="location"]',
+            'button[aria-label*="location" i]',
+            'button[aria-label*="Location" i]',
+            '[role="button"]',
+            'span',
+            'div'
+          ];
+          
+          for (const buttonSelector of locationButtons) {
+            try {
+              const buttons = await page.$$(buttonSelector);
+              for (const button of buttons) {
+                try {
+                  const text = await page.evaluate(el => el.textContent || '', button);
+                  if (text.toLowerCase().includes('location')) {
+                    console.log('Clicking location button with text:', text);
+                    await button.click();
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    
+                    // Try finding the input again after clicking
+                    for (const selector of locationSelectors) {
+                      try {
+                        locationInput = await page.$(selector);
+                        if (locationInput) {
+                          console.log('Found location input after clicking button, selector:', selector);
+                          break;
+                        }
+                      } catch (e) {}
+                    }
+                    if (locationInput) break;
+                  }
+                } catch (e) {}
+              }
+              if (locationInput) break;
+            } catch (e) {
+              console.log('Error with selector:', buttonSelector, e.message);
+            }
+          }
+        }
+        
+        if (locationInput) {
+          console.log('Setting location to 37138...');
+          await locationInput.clear();
+          await locationInput.type('37138');
+          await page.keyboard.press('Enter');
+          
+          console.log('Location set. Waiting for results to load...');
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          
+          // Show instructions
+          await page.evaluate(() => {
+            const div = document.createElement('div');
+            div.innerHTML = `
+              <div style="position:fixed;top:10px;left:10px;background:yellow;padding:15px;border:2px solid black;z-index:9999;font-size:14px;max-width:400px;">
+                <strong>Location Set to 37138</strong><br>
+                Check if you see Nashville-area items. If correct, the window will close automatically in 10 seconds.<br>
+                <em>If wrong location, close this window manually.</em>
+              </div>
+            `;
+            document.body.appendChild(div);
+          });
+          
+          // Wait 10 seconds to let user verify location
+          console.log('Waiting 10 seconds for location verification...');
+          await new Promise(resolve => setTimeout(resolve, 10000));
+          
+          console.log('Capturing cookies with location...');
+          const cookies = await page.cookies();
+          
+          console.log(`Captured ${cookies.length} cookies with location`);
+          fs.writeFileSync(path.join(__dirname, 'cookies.json'), JSON.stringify(cookies, null, 2));
+          
+          await browser.close();
+          browser = null;
+          
+          console.log('Location and cookies saved successfully');
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true }));
+        } else {
+          // Manual fallback - show instructions for user to set location manually
+          console.log('Could not find location input automatically. Showing manual instructions...');
+          
+          await page.evaluate(() => {
+            const div = document.createElement('div');
+            div.innerHTML = `
+              <div style="position:fixed;top:10px;left:10px;background:orange;padding:20px;border:3px solid red;z-index:9999;font-size:16px;max-width:500px;">
+                <strong>MANUAL LOCATION SETUP REQUIRED</strong><br><br>
+                <strong>Steps:</strong><br>
+                1. Click on the location field (usually shows current location)<br>
+                2. Type "37138" and press Enter<br>
+                3. Verify you see Nashville-area items<br>
+                4. Close this browser window<br><br>
+                <em>The scraper will capture cookies when you close the window.</em>
+              </div>
+            `;
+            document.body.appendChild(div);
+          });
+          
+          // Wait for user to close the window or set location manually
+          console.log('Waiting for user to manually set location and close window...');
+          
+          // Listen for window close or timeout
+          let closed = false;
+          const closePromise = new Promise((resolve) => {
+            browser.on('disconnected', () => {
+              closed = true;
+              resolve();
+            });
+          });
+          
+          const timeoutPromise = new Promise((resolve) => {
+            setTimeout(() => {
+              if (!closed) {
+                resolve();
+              }
+            }, 120000); // 2 minutes timeout
+          });
+          
+          await Promise.race([closePromise, timeoutPromise]);
+          
+          if (closed) {
+            console.log('Browser closed by user, capturing cookies...');
+            try {
+              const cookies = await page.cookies();
+              console.log(`Captured ${cookies.length} cookies`);
+              fs.writeFileSync(path.join(__dirname, 'cookies.json'), JSON.stringify(cookies, null, 2));
+              
+              console.log('Cookies saved successfully');
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: true, method: 'manual' }));
+            } catch (err) {
+              console.error('Error capturing cookies after manual setup:', err);
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, error: 'Failed to capture cookies after manual setup' }));
+            }
+          } else {
+            console.log('Timeout waiting for manual location setup');
+            await browser.close();
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: 'Timeout waiting for manual location setup' }));
+          }
+        }
+        
+      } catch (err) {
+        console.error('Location capture error:', err);
+        if (browser) {
+          try {
+            await browser.close();
+          } catch (e) {}
+        }
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    })();
+  } else if (pathname === '/api/progress') {
+    // Server-Sent Events for progress updates
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Cache-Control'
+    });
+    
+    // Send initial progress
+    const sendProgress = (stage, progress, message) => {
+      res.write(`data: ${JSON.stringify({ stage, progress, message })}\n\n`);
+    };
+    
+    sendProgress('idle', 0, 'Ready to scrape');
+    
+    // Keep connection alive
+    const keepAlive = setInterval(() => {
+      res.write(': keepalive\n\n');
+    }, 30000);
+    
+    // Clean up on client disconnect
+    req.on('close', () => {
+      clearInterval(keepAlive);
+    });
+    
+    // Store the response for progress updates
+    global.progressClients = global.progressClients || [];
+    global.progressClients.push(sendProgress);
+    
+    req.on('close', () => {
+      global.progressClients = global.progressClients.filter(client => client !== sendProgress);
     });
   } else {
     res.writeHead(404);
