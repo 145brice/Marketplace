@@ -108,13 +108,13 @@ function extractModel(title) {
   return (found + ' ' + modelPart).trim();
 }
 
-async function fetchSoldHistory(models, page) {
+async function fetchSoldHistory(models, page, coords, radius) {
   const results = {};
   for (const model of models) {
     if (!model) continue;
     try {
-      // Try Facebook Marketplace sold search with Nashville location
-      const searchUrl = `https://www.facebook.com/marketplace/search/?query=${encodeURIComponent(model)}&exact=false&location=37138&radius=50`;
+      // Try Facebook Marketplace sold search with specified location
+      const searchUrl = `https://www.facebook.com/marketplace/search/?query=${encodeURIComponent(model)}&exact=false&latitude=${coords.lat}&longitude=${coords.lng}&radius=${radius}`;
       await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
       
       // Scroll and gather prices (best-effort; Marketplace often hides sold badge)
@@ -180,13 +180,44 @@ async function runScrape(params) {
 
   const limit = Math.max(1, Math.min(100, parseInt(params.limit || '10', 10)));
   const keywords = (params.keywords || '').trim();
-  const location = (params.location || '').trim();
-  // Force Nashville location with coordinates
-  const nashvilleCoords = '36.1627,-86.7816'; // Nashville, TN coordinates
+  const location = (params.location || '37138').trim(); // Default to Nashville zip
+  const radius = parseInt(params.radius || '50', 10);
+
+  // Geocode location to coordinates (using hardcoded values for common locations)
+  const locationMap = {
+    // Tennessee
+    '37138': { lat: 36.1627, lng: -86.7816, name: 'Nashville, TN' },
+    'nashville': { lat: 36.1627, lng: -86.7816, name: 'Nashville, TN' },
+    'memphis': { lat: 35.1495, lng: -90.0490, name: 'Memphis, TN' },
+    'knoxville': { lat: 35.9606, lng: -83.9207, name: 'Knoxville, TN' },
+    // California
+    '90210': { lat: 34.0901, lng: -118.4065, name: 'Beverly Hills, CA' },
+    'losangeles': { lat: 34.0522, lng: -118.2437, name: 'Los Angeles, CA' },
+    'sandiego': { lat: 32.7157, lng: -117.1611, name: 'San Diego, CA' },
+    'sanfrancisco': { lat: 37.7749, lng: -122.4194, name: 'San Francisco, CA' },
+    'sacramento': { lat: 38.5816, lng: -121.4944, name: 'Sacramento, CA' },
+    // Other major cities
+    'newyork': { lat: 40.7128, lng: -74.0060, name: 'New York, NY' },
+    'chicago': { lat: 41.8781, lng: -87.6298, name: 'Chicago, IL' },
+    'houston': { lat: 29.7604, lng: -95.3698, name: 'Houston, TX' },
+    'dallas': { lat: 32.7767, lng: -96.7970, name: 'Dallas, TX' },
+    'austin': { lat: 30.2672, lng: -97.7431, name: 'Austin, TX' },
+    'phoenix': { lat: 33.4484, lng: -112.0740, name: 'Phoenix, AZ' },
+    'philadelphia': { lat: 39.9526, lng: -75.1652, name: 'Philadelphia, PA' },
+    'atlanta': { lat: 33.7490, lng: -84.3880, name: 'Atlanta, GA' },
+    'miami': { lat: 25.7617, lng: -80.1918, name: 'Miami, FL' },
+    'seattle': { lat: 47.6062, lng: -122.3321, name: 'Seattle, WA' },
+    'boston': { lat: 42.3601, lng: -71.0589, name: 'Boston, MA' },
+    'denver': { lat: 39.7392, lng: -104.9903, name: 'Denver, CO' }
+  };
+
+  const coords = locationMap[location.toLowerCase()] || { lat: 36.1627, lng: -86.7816, name: location };
+  console.log(`Using location: ${coords.name} (${coords.lat}, ${coords.lng})`);
+
   const baseUrl = 'https://www.facebook.com/marketplace';
   const targetUrl = keywords
-    ? `${baseUrl}/search/?query=${encodeURIComponent(keywords)}&latitude=${nashvilleCoords.split(',')[0]}&longitude=${nashvilleCoords.split(',')[1]}&radius=50`
-    : `${baseUrl}/category/riding-lawn-mowers?latitude=${nashvilleCoords.split(',')[0]}&longitude=${nashvilleCoords.split(',')[1]}&radius=50`;
+    ? `${baseUrl}/search/?query=${encodeURIComponent(keywords)}&latitude=${coords.lat}&longitude=${coords.lng}&radius=${radius}`
+    : `${baseUrl}/category/riding-lawn-mowers?latitude=${coords.lat}&longitude=${coords.lng}&radius=${radius}`;
   console.log('Target URL:', targetUrl); // Debug logging
   const minPrice = isFinite(Number(params.minPrice)) ? Number(params.minPrice) : null;
   const maxPrice = isFinite(Number(params.maxPrice)) ? Number(params.maxPrice) : null;
@@ -198,26 +229,52 @@ async function runScrape(params) {
     emitProgress('starting', 0, 'Launching browser...');
     currentBrowser = await puppeteer.launch({ headless: false });
     const page = await currentBrowser.newPage();
-    
+
     // Set user agent to look more like a real browser
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-    
+
     // Set viewport
     await page.setViewport({ width: 1280, height: 720 });
+
+    // CRITICAL: Override geolocation to match our target location
+    const context = currentBrowser.defaultBrowserContext();
+    await context.overridePermissions('https://www.facebook.com', ['geolocation']);
+    await page.setGeolocation({
+      latitude: coords.lat,
+      longitude: coords.lng,
+      accuracy: 100
+    });
+    console.log(`Geolocation set to: ${coords.lat}, ${coords.lng}`);
 
     // Apply cookies from cookies.json
     try {
       const cookies = JSON.parse(fs.readFileSync(path.join(__dirname, 'cookies.json'), 'utf8'));
       if (Array.isArray(cookies) && cookies.length) {
         await page.setCookie(...cookies);
+        console.log(`Loaded ${cookies.length} cookies from cookies.json`);
       }
     } catch (err) {
-      // No cookies provided or invalid; continue anyway
+      console.log('No cookies found, will need manual login');
     }
 
-    emitProgress('loading', 10, 'Loading marketplace page...');
+    emitProgress('loading', 10, `Loading marketplace page for ${coords.name}...`);
     await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 120000 });
-    
+
+    // Check if we're on a login page
+    const isLoginPage = await page.evaluate(() => {
+      return !!(document.querySelector('input[type="password"]') ||
+                document.querySelector('input[name="email"]') ||
+                window.location.href.includes('login'));
+    });
+
+    if (isLoginPage) {
+      console.error('Still on login page - cookies may be invalid or expired');
+      throw new Error('Login required - please click "🔐 Login to Facebook First" button and log in before starting the scraper');
+    }
+
+    // Wait for page to load and verify location
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
     // Debug: Check what location Facebook detected
     try {
       const detectedLocation = await page.evaluate(() => {
@@ -228,44 +285,13 @@ async function runScrape(params) {
             return el.textContent.trim();
           }
         }
-        // Check URL for location
-        if (window.location.href.includes('/marketplace/')) {
-          const match = window.location.href.match(/\/marketplace\/([^\/]+)/);
-          return match ? match[1] : 'unknown';
-        }
-        return 'unknown';
+        return 'checking...';
       });
       console.log('Facebook detected location:', detectedLocation);
-      
-      // If location is not Nashville-related, try to force it
-      if (!detectedLocation.toLowerCase().includes('nashville') && 
-          !detectedLocation.toLowerCase().includes('tennessee') && 
-          !detectedLocation.toLowerCase().includes('37138')) {
-        console.log('Location not Nashville, attempting to force Nashville location...');
-        
-        // Try to set location via URL parameters
-        const nashvilleUrl = `${targetUrl}&latitude=36.1627&longitude=-86.7816&radius=50`;
-        console.log('Redirecting to Nashville URL:', nashvilleUrl);
-        await page.goto(nashvilleUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        
-        // Check location again
-        const newDetectedLocation = await page.evaluate(() => {
-          const locationElements = document.querySelectorAll('[data-testid*="location"], [aria-label*="location"], .location');
-          for (const el of locationElements) {
-            if (el.textContent && el.textContent.length > 3) {
-              return el.textContent.trim();
-            }
-          }
-          return 'unknown';
-        });
-        console.log('Location after redirect:', newDetectedLocation);
-        emitProgress('loading', 15, `Loading marketplace page... (Location: ${newDetectedLocation})`);
-      } else {
-        emitProgress('loading', 15, `Loading marketplace page... (Location: ${detectedLocation})`);
-      }
+      emitProgress('loading', 15, `Loading marketplace (Location: ${detectedLocation})...`);
     } catch (e) {
-      console.log('Could not detect/correct location:', e.message);
+      console.log('Could not detect location:', e.message);
+      emitProgress('loading', 15, `Loading marketplace for ${coords.name}...`);
     }
 
     emitProgress('scrolling', 20, 'Loading more listings...');
@@ -401,7 +427,7 @@ async function runScrape(params) {
     emitProgress('processing', 85, 'Processing sold history...');
     // Extract models and fetch sold history
     const models = deals.map(d => extractModel(d.title)).filter(Boolean);
-    const soldHistory = await fetchSoldHistory([...new Set(models)], page);
+    const soldHistory = await fetchSoldHistory([...new Set(models)], page, coords, radius);
 
     // Attach sold data to each deal
     deals = deals.map(d => {
@@ -592,8 +618,9 @@ const server = http.createServer((req, res) => {
             </div>
 
             <div class="form-group">
-              <button type="button" onclick="captureCookies()" style="padding:8px 12px;background:#28a745;color:white;border:none;border-radius:6px;cursor:pointer;">📍 Set Location & Capture Cookies</button>
-              <span id="cookieStatus" style="margin-left:10px;color:#666;font-size:13px"></span>
+              <button type="button" onclick="simpleLogin()" style="padding:12px 20px;background:#28a745;color:white;border:none;border-radius:6px;cursor:pointer;font-size:16px;font-weight:bold;">🔐 Login to Facebook First (REQUIRED)</button>
+              <span id="loginStatus" style="margin-left:10px;color:#666;font-size:13px"></span>
+              <p style="margin:8px 0 0 0;color:#666;font-size:12px;">Click this button BEFORE starting the scraper. Log in to Facebook, then close the browser window.</p>
             </div>
 
             <div class="form-group">
@@ -820,19 +847,25 @@ const server = http.createServer((req, res) => {
 
           function startScraper() {
             const keywords = document.getElementById('keywords').value;
+            const location = document.getElementById('location').value;
             const radius = document.getElementById('radius').value;
             const maxPrice = document.getElementById('maxPrice').value;
             const minPrice = document.getElementById('minPrice').value;
             const limit = document.getElementById('limit').value;
             const interval = document.getElementById('interval').value;
+            const titleKeywords = document.getElementById('titleKeywords').value;
+            const descriptionKeywords = document.getElementById('descriptionKeywords').value;
 
             const params = new URLSearchParams({
               keywords,
+              location,
               radius,
               maxPrice,
               minPrice,
               limit,
-              interval
+              interval,
+              titleKeywords,
+              descriptionKeywords
             });
 
               fetch('/api/start?' + params.toString())
@@ -931,20 +964,21 @@ const server = http.createServer((req, res) => {
               });
           }
 
-          async function captureCookies() {
-            const statusEl = document.getElementById('cookieStatus');
-            statusEl.textContent = 'Opening Facebook Marketplace...';
-            
+          async function simpleLogin() {
+            const statusEl = document.getElementById('loginStatus');
+            statusEl.textContent = 'Opening Facebook...';
+            statusEl.style.color = '#666';
+
             try {
-              const response = await fetch('/api/capture-location', { method: 'POST' });
+              const response = await fetch('/api/simple-login', { method: 'POST' });
               const data = await response.json();
-              
+
               if (data.success) {
                 statusEl.style.color = '#28a745';
-                statusEl.textContent = '✓ Location and cookies saved!';
+                statusEl.textContent = '✓ Login complete! You can now start the scraper.';
               } else {
                 statusEl.style.color = '#dc3545';
-                statusEl.textContent = '✗ ' + (data.error || 'Failed to capture location');
+                statusEl.textContent = '✗ ' + (data.error || 'Login failed');
               }
             } catch (err) {
               statusEl.style.color = '#dc3545';
@@ -965,7 +999,9 @@ const server = http.createServer((req, res) => {
       isRunning = true;
       runScrape(params)
         .catch((err) => {
-          saveResults([], { ...params, error: String(err && err.message || err) });
+          console.error('Scraper error:', err);
+          const errorMsg = err && err.message ? err.message : String(err);
+          saveResults([], { ...params, error: errorMsg, errorStack: err.stack });
         })
         .finally(() => { isRunning = false; });
     };
@@ -1126,6 +1162,77 @@ const server = http.createServer((req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true }));
       } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    })();
+  } else if (pathname === '/api/simple-login' && req.method === 'POST') {
+    (async () => {
+      let browser;
+      try {
+        console.log('Starting simple login flow...');
+        browser = await puppeteer.launch({ headless: false });
+        const page = await browser.newPage();
+
+        await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        await page.setViewport({ width: 1280, height: 720 });
+
+        console.log('Opening Facebook Marketplace...');
+        await page.goto('https://www.facebook.com/marketplace', { waitUntil: 'networkidle2', timeout: 60000 });
+
+        // Start auto-saving cookies every 2 seconds
+        const cookieSaveInterval = setInterval(async () => {
+          try {
+            const cookies = await page.cookies();
+            const hasAuth = cookies.some(c => c.name === 'c_user' || c.name === 'xs');
+            if (hasAuth) {
+              fs.writeFileSync(path.join(__dirname, 'cookies.json'), JSON.stringify(cookies, null, 2));
+              console.log(`Auto-saved ${cookies.length} cookies with authentication`);
+            }
+          } catch (e) {
+            // Ignore errors during auto-save
+          }
+        }, 2000);
+
+        // Show big message
+        await page.evaluate(() => {
+          const div = document.createElement('div');
+          div.id = 'login-helper';
+          div.innerHTML = `
+            <div style="position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#4CAF50;padding:30px;border-radius:12px;z-index:999999;font-size:20px;color:white;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,0.3);max-width:600px;">
+              <h2 style="margin:0 0 20px 0;">🔐 Facebook Login</h2>
+              <p style="margin:0 0 15px 0;font-size:16px;">1. Log in to Facebook if prompted</p>
+              <p style="margin:0 0 15px 0;font-size:16px;">2. Wait for Marketplace to load</p>
+              <p style="margin:0 0 15px 0;font-size:16px;">3. Set your location if needed</p>
+              <p style="margin:0;font-size:18px;font-weight:bold;">Then close this browser window!</p>
+              <p style="margin:10px 0 0 0;font-size:14px;opacity:0.9;">(Your login is being saved automatically)</p>
+            </div>
+          `;
+          document.body.appendChild(div);
+        });
+
+        // Wait for user to close the browser
+        await new Promise((resolve, reject) => {
+          browser.on('disconnected', () => {
+            clearInterval(cookieSaveInterval);
+            resolve();
+          });
+          setTimeout(() => {
+            clearInterval(cookieSaveInterval);
+            reject(new Error('Timeout after 10 minutes'));
+          }, 600000);
+        });
+
+        console.log('Browser closed by user');
+        clearInterval(cookieSaveInterval);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch (err) {
+        console.error('Login error:', err);
+        if (browser) {
+          try { await browser.close(); } catch (e) {}
+        }
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false, error: err.message }));
       }
