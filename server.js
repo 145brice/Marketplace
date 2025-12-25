@@ -4,6 +4,26 @@ const fs = require('fs');
 const path = require('path');
 const puppeteer = require('puppeteer');
 
+// Puppeteer config for production (Fly.io) vs local
+function getPuppeteerConfig() {
+  const isProduction = process.env.PORT === '8080' || process.env.FLY_APP_NAME;
+
+  if (isProduction) {
+    return {
+      headless: true,
+      executablePath: '/usr/bin/chromium',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu'
+      ]
+    };
+  }
+
+  return { headless: false };
+}
+
 // In-memory state
 let isRunning = false;
 let currentBrowser = null;
@@ -227,7 +247,7 @@ async function runScrape(params) {
   let deals = [];
   try {
     emitProgress('starting', 0, 'Launching browser...');
-    currentBrowser = await puppeteer.launch({ headless: false });
+    currentBrowser = await puppeteer.launch(getPuppeteerConfig());
     const page = await currentBrowser.newPage();
 
     // Set user agent to look more like a real browser
@@ -1063,7 +1083,7 @@ const server = http.createServer((req, res) => {
     (async () => {
       try {
         // Launch browser for cookie capture
-        const browser = await puppeteer.launch({ headless: false });
+        const browser = await puppeteer.launch(getPuppeteerConfig());
         const page = await browser.newPage();
         
         // Set user agent and other properties to look more like a regular browser
@@ -1171,7 +1191,7 @@ const server = http.createServer((req, res) => {
       let browser;
       try {
         console.log('Starting simple login flow...');
-        browser = await puppeteer.launch({ headless: false });
+        browser = await puppeteer.launch(getPuppeteerConfig());
         const page = await browser.newPage();
 
         await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
@@ -1243,7 +1263,7 @@ const server = http.createServer((req, res) => {
       try {
         console.log('Starting location capture process...');
         // Launch browser for location capture
-        browser = await puppeteer.launch({ headless: false });
+        browser = await puppeteer.launch(getPuppeteerConfig());
         const page = await browser.newPage();
         
         // Set user agent and other properties to look more like a regular browser
@@ -1661,6 +1681,7 @@ const server = http.createServer((req, res) => {
   }
 });
 
-server.listen(8020, () => {
-  console.log('🚀 Mower Scraper UI running on http://localhost:8020');
+const PORT = process.env.PORT || 8020;
+server.listen(PORT, () => {
+  console.log(`🚀 Mower Scraper UI running on http://localhost:${PORT}`);
 });
