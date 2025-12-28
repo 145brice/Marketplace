@@ -48,13 +48,14 @@ async function humanScroll(page, maxScrolls) {
 }
 
 // Puppeteer config for production (Fly.io) vs local
-function getPuppeteerConfig() {
+// forLogin = true shows browser (for "forgot password" flows), false hides it (for scraping)
+function getPuppeteerConfig(forLogin = false) {
   const isProduction = process.env.PORT === '8080' || process.env.FLY_APP_NAME;
 
   // Base config with user data directory for persistent sessions (keeps Facebook login)
   const baseConfig = {
     userDataDir: path.join(getUserDataDir(), 'browser-data'),
-    headless: true  // Headless for clean user experience (no browser windows popping up)
+    headless: forLogin ? false : true  // Visible for login, hidden for scraping
   };
 
   if (isProduction) {
@@ -70,7 +71,7 @@ function getPuppeteerConfig() {
     };
   }
 
-  // Local desktop app - headless for clean UI, but can set to false for debugging
+  // Local desktop app
   return baseConfig;
 }
 
@@ -898,6 +899,11 @@ const server = http.createServer((req, res) => {
           td a:hover {
             text-decoration: underline;
           }
+          .required {
+            color: #e74c3c;
+            margin-left: 4px;
+            font-weight: 700;
+          }
         </style>
       </head>
       <body>
@@ -937,13 +943,13 @@ const server = http.createServer((req, res) => {
               </div>
               <form id="scraperForm" onsubmit="event.preventDefault(); startScraper();">
                 <div class="form-group">
-                  <label for="keywords">What are you looking for?</label>
-                  <input type="text" id="keywords" name="keywords" placeholder="e.g., furniture, electronics, mowers" value="">
+                  <label for="keywords">What are you looking for?<span class="required">*</span></label>
+                  <input type="text" id="keywords" name="keywords" placeholder="e.g., furniture, electronics, mowers" value="" required>
                 </div>
 
                 <div class="form-group">
-                  <label for="location">Location</label>
-                  <input type="text" id="location" name="location" placeholder="e.g., 37138, Nashville, 90210">
+                  <label for="location">Location<span class="required">*</span></label>
+                  <input type="text" id="location" name="location" placeholder="e.g., 37138, Nashville, 90210" required>
                 </div>
 
                 <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
@@ -1059,12 +1065,12 @@ const server = http.createServer((req, res) => {
                   <thead>
                     <tr>
                       <th>Title</th>
+                      <th>Description</th>
                       <th>Price</th>
+                      <th>Profit</th>
+                      <th>Margin %</th>
                       <th>Sold (30d)</th>
                       <th>Avg Sold</th>
-                      <th>Margin %</th>
-                      <th>Profit</th>
-                      <th>Description</th>
                       <th>Link</th>
                     </tr>
                   </thead>
@@ -1108,45 +1114,52 @@ const server = http.createServer((req, res) => {
                 tdTitle.style.padding = '10px';
                 tdTitle.style.borderBottom = '1px solid #f0f0f0';
                 const titleLink = document.createElement('a');
-                titleLink.href = d.link;
-                titleLink.target = '_blank';
+                titleLink.href = '#';
                 titleLink.style.color = '#333';
                 titleLink.style.textDecoration = 'none';
+                titleLink.style.cursor = 'pointer';
                 titleLink.textContent = d.title || 'No title';
+                titleLink.addEventListener('click', function(e) {
+                  e.preventDefault();
+                  // Try Tauri opener first, fallback to window.open
+                  if (window.__TAURI__ && window.__TAURI__.shell) {
+                    window.__TAURI__.shell.open(d.link);
+                  } else {
+                    window.open(d.link, '_blank');
+                  }
+                });
                 titleLink.addEventListener('mouseenter', function() { this.style.color = '#667eea'; this.style.textDecoration = 'underline'; });
                 titleLink.addEventListener('mouseleave', function() { this.style.color = '#333'; this.style.textDecoration = 'none'; });
                 tdTitle.appendChild(titleLink);
-                tr.appendChild(tdTitle);
+
+                // Description column (moved up for visibility)
+                const tdDescription = document.createElement('td');
+                tdDescription.style.padding = '10px';
+                tdDescription.style.borderBottom = '1px solid #f0f0f0';
+                tdDescription.style.fontSize = '12px';
+                tdDescription.style.color = '#666';
+                tdDescription.style.maxWidth = '300px';
+                tdDescription.style.wordWrap = 'break-word';
+                tdDescription.textContent = (d.description || '').substring(0, 150) + ((d.description || '').length > 150 ? '...' : '');
 
                 const tdPrice = document.createElement('td');
                 tdPrice.style.padding = '10px';
                 tdPrice.style.borderBottom = '1px solid #f0f0f0';
                 tdPrice.textContent = d.price || (d.priceNumber != null ? ('$' + d.priceNumber) : 'N/A');
-                tr.appendChild(tdPrice);
 
-                const tdSold = document.createElement('td');
-                tdSold.style.padding = '10px';
-                tdSold.style.borderBottom = '1px solid #f0f0f0';
-                tdSold.style.fontSize = '13px';
-                tdSold.style.color = '#555';
-                if (d.soldHistory && d.soldHistory.sold > 0) {
-                  tdSold.innerHTML = d.soldHistory.sold + ' @ $' + d.soldHistory.avg + '<br><span style="color:#999;font-size:11px">($' + d.soldHistory.low + '–$' + d.soldHistory.high + ')</span>';
+                // Profit column (moved up - KEY metric!)
+                const tdProfit = document.createElement('td');
+                tdProfit.style.padding = '10px';
+                tdProfit.style.borderBottom = '1px solid ' + '#f0f0f0';
+                tdProfit.style.fontSize = '13px';
+                tdProfit.style.fontWeight = '600';
+                if (d.profitRange && d.profitRange !== 'no data') {
+                  tdProfit.style.color = '#27ae60';
+                  tdProfit.innerHTML = d.profitRange + '<br><span style="color:#999;font-size:11px;font-weight:400">Fix: $' + (d.fixCost || 12) + ' · ' + (d.flipTime || '9 days') + '</span>';
                 } else {
-                  tdSold.textContent = 'no data';
+                  tdProfit.style.color = '#999';
+                  tdProfit.textContent = 'no data';
                 }
-                tr.appendChild(tdSold);
-
-                const tdAvg = document.createElement('td');
-                tdAvg.style.padding = '10px';
-                tdAvg.style.borderBottom = '1px solid #f0f0f0';
-                tdAvg.style.fontSize = '13px';
-                tdAvg.style.color = '#333';
-                if (d.avgSold && d.avgSold > 0) {
-                  tdAvg.innerHTML = '$' + d.avgSold;
-                } else {
-                  tdAvg.textContent = 'no data';
-                }
-                tr.appendChild(tdAvg);
 
                 const tdMargin = document.createElement('td');
                 tdMargin.style.padding = '10px';
@@ -1160,40 +1173,55 @@ const server = http.createServer((req, res) => {
                   tdMargin.style.color = '#e74c3c';
                   tdMargin.textContent = (d.marginFromAvg || 0).toFixed(1) + '%';
                 }
-                tr.appendChild(tdMargin);
 
-                const tdProfit = document.createElement('td');
-                tdProfit.style.padding = '10px';
-                tdProfit.style.borderBottom = '1px solid ' + '#f0f0f0';
-                tdProfit.style.fontSize = '13px';
-                tdProfit.style.fontWeight = '600';
-                if (d.profitRange && d.profitRange !== 'no data') {
-                  tdProfit.style.color = '#27ae60';
-                  tdProfit.innerHTML = d.profitRange + '<br><span style="color:#999;font-size:11px;font-weight:400">Fix: $' + (d.fixCost || 12) + ' · ' + (d.flipTime || '9 days') + '</span>';
+                const tdSold = document.createElement('td');
+                tdSold.style.padding = '10px';
+                tdSold.style.borderBottom = '1px solid #f0f0f0';
+                tdSold.style.fontSize = '13px';
+                tdSold.style.color = '#555';
+                if (d.soldHistory && d.soldHistory.sold > 0) {
+                  tdSold.innerHTML = d.soldHistory.sold + ' @ $' + d.soldHistory.avg + '<br><span style="color:#999;font-size:11px">($' + d.soldHistory.low + '–$' + d.soldHistory.high + ')</span>';
                 } else {
-                  tdProfit.style.color = '#999';
-                  tdProfit.textContent = 'no data';
+                  tdSold.textContent = 'no data';
                 }
-                tr.appendChild(tdProfit);
 
-                const tdDescription = document.createElement('td');
-                tdDescription.style.padding = '10px';
-                tdDescription.style.borderBottom = '1px solid #f0f0f0';
-                tdDescription.style.fontSize = '12px';
-                tdDescription.style.color = '#666';
-                tdDescription.style.maxWidth = '200px';
-                tdDescription.style.wordWrap = 'break-word';
-                tdDescription.textContent = (d.description || '').substring(0, 150) + ((d.description || '').length > 150 ? '...' : '');
+                const tdAvg = document.createElement('td');
+                tdAvg.style.padding = '10px';
+                tdAvg.style.borderBottom = '1px solid #f0f0f0';
+                tdAvg.style.fontSize = '13px';
+                tdAvg.style.color = '#333';
+                if (d.avgSold && d.avgSold > 0) {
+                  tdAvg.innerHTML = '$' + d.avgSold;
+                } else {
+                  tdAvg.textContent = 'no data';
+                }
+
+                // Now append in the correct order: Title, Description, Price, Profit, Margin, Sold, Avg, Link
+                tr.appendChild(tdTitle);
                 tr.appendChild(tdDescription);
+                tr.appendChild(tdPrice);
+                tr.appendChild(tdProfit);
+                tr.appendChild(tdMargin);
+                tr.appendChild(tdSold);
+                tr.appendChild(tdAvg);
 
                 const tdLink = document.createElement('td');
                 tdLink.style.padding = '10px';
                 tdLink.style.borderBottom = '1px solid #f0f0f0';
                 const a = document.createElement('a');
-                a.href = d.link;
-                a.target = '_blank';
+                a.href = '#';
                 a.style.color = '#667eea';
+                a.style.cursor = 'pointer';
                 a.textContent = 'Open';
+                a.addEventListener('click', function(e) {
+                  e.preventDefault();
+                  // Try Tauri opener first, fallback to window.open
+                  if (window.__TAURI__ && window.__TAURI__.shell) {
+                    window.__TAURI__.shell.open(d.link);
+                  } else {
+                    window.open(d.link, '_blank');
+                  }
+                });
                 tdLink.appendChild(a);
                 tr.appendChild(tdLink);
 
@@ -1445,8 +1473,8 @@ const server = http.createServer((req, res) => {
   } else if (pathname === '/api/capture-cookies' && req.method === 'POST') {
     (async () => {
       try {
-        // Launch browser for cookie capture
-        const browser = await puppeteer.launch(getPuppeteerConfig());
+        // Launch browser for cookie capture (visible for login)
+        const browser = await puppeteer.launch(getPuppeteerConfig(true));
         const page = await browser.newPage();
         
         // Set user agent and other properties to look more like a regular browser
@@ -1554,14 +1582,23 @@ const server = http.createServer((req, res) => {
       let browser;
       try {
         console.log('Starting simple login flow...');
-        browser = await puppeteer.launch(getPuppeteerConfig());
+        browser = await puppeteer.launch(getPuppeteerConfig(true));  // Visible for login
         const page = await browser.newPage();
 
         await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
         await page.setViewport({ width: 1280, height: 720 });
 
         console.log('Opening Facebook Marketplace...');
-        await page.goto('https://www.facebook.com/marketplace', { waitUntil: 'networkidle2', timeout: 60000 });
+        // Use domcontentloaded instead of networkidle2 - faster, more reliable
+        await page.goto('https://www.facebook.com/marketplace', {
+          waitUntil: 'domcontentloaded',
+          timeout: 60000
+        }).catch((err) => {
+          console.log('Page load error (continuing anyway):', err.message);
+        });
+
+        // Give it a moment to settle
+        await new Promise(resolve => setTimeout(resolve, 3000));
 
         // Start auto-saving cookies every 2 seconds
         const cookieSaveInterval = setInterval(async () => {
@@ -1594,7 +1631,7 @@ const server = http.createServer((req, res) => {
           document.body.appendChild(div);
         });
 
-        // Wait for user to close the browser
+        // Wait for user to close the browser (20 min timeout for "forgot password" email flow)
         await new Promise((resolve, reject) => {
           browser.on('disconnected', () => {
             clearInterval(cookieSaveInterval);
@@ -1602,8 +1639,8 @@ const server = http.createServer((req, res) => {
           });
           setTimeout(() => {
             clearInterval(cookieSaveInterval);
-            reject(new Error('Timeout after 10 minutes'));
-          }, 600000);
+            reject(new Error('Timeout after 20 minutes'));
+          }, 1200000);
         });
 
         console.log('Browser closed by user');
@@ -1625,8 +1662,8 @@ const server = http.createServer((req, res) => {
       let browser;
       try {
         console.log('Starting location capture process...');
-        // Launch browser for location capture
-        browser = await puppeteer.launch(getPuppeteerConfig());
+        // Launch browser for location capture (visible for user interaction)
+        browser = await puppeteer.launch(getPuppeteerConfig(true));
         const page = await browser.newPage();
         
         // Set user agent and other properties to look more like a regular browser
