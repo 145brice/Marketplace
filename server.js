@@ -4,13 +4,62 @@ const fs = require('fs');
 const path = require('path');
 const puppeteer = require('puppeteer');
 
+// Human-like behavior helpers to avoid bot detection
+const randomDelay = (min, max) => new Promise(resolve => setTimeout(resolve, Math.random() * (max - min) + min));
+const randomInt = (min, max) => Math.floor(Math.random() * (max - min + 1) + min);
+const randomUserAgent = () => {
+  const agents = [
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0'
+  ];
+  return agents[randomInt(0, agents.length - 1)];
+};
+
+// Add human-like mouse movements
+async function humanMouseMovement(page) {
+  const movements = randomInt(3, 8);
+  for (let i = 0; i < movements; i++) {
+    const x = randomInt(100, 1000);
+    const y = randomInt(100, 600);
+    await page.mouse.move(x, y);
+    await randomDelay(100, 300);
+  }
+}
+
+// Human-like scrolling with random patterns
+async function humanScroll(page, maxScrolls) {
+  const scrollCount = randomInt(Math.floor(maxScrolls * 0.7), maxScrolls);
+  for (let i = 0; i < scrollCount; i++) {
+    const scrollAmount = randomInt(300, 800);
+    await page.evaluate((amount) => {
+      window.scrollBy(0, amount);
+    }, scrollAmount);
+    await randomDelay(500, 1500);
+
+    // Sometimes scroll back up a bit (realistic browsing)
+    if (Math.random() < 0.2) {
+      await page.evaluate(() => window.scrollBy(0, -200));
+      await randomDelay(300, 700);
+    }
+  }
+}
+
 // Puppeteer config for production (Fly.io) vs local
 function getPuppeteerConfig() {
   const isProduction = process.env.PORT === '8080' || process.env.FLY_APP_NAME;
 
+  // Base config with user data directory for persistent sessions (keeps Facebook login)
+  const baseConfig = {
+    userDataDir: path.join(getUserDataDir(), 'browser-data'),
+    headless: true  // Headless for clean user experience (no browser windows popping up)
+  };
+
   if (isProduction) {
     return {
-      headless: true,
+      ...baseConfig,
       executablePath: '/usr/bin/chromium',
       args: [
         '--no-sandbox',
@@ -21,15 +70,44 @@ function getPuppeteerConfig() {
     };
   }
 
-  return { headless: false };
+  // Local desktop app - headless for clean UI, but can set to false for debugging
+  return baseConfig;
+}
+
+// Get user-specific data directory
+// Each user gets their own isolated storage in their system's Application Support folder
+function getUserDataDir() {
+  const os = require('os');
+  const homeDir = os.homedir();
+
+  // macOS: ~/Library/Application Support/Marketplace Finder
+  // Windows: C:\Users\[username]\AppData\Roaming\Marketplace Finder
+  // Linux: ~/.local/share/Marketplace Finder
+  let dataDir;
+  if (process.platform === 'darwin') {
+    dataDir = path.join(homeDir, 'Library', 'Application Support', 'Marketplace Finder');
+  } else if (process.platform === 'win32') {
+    dataDir = path.join(homeDir, 'AppData', 'Roaming', 'Marketplace Finder');
+  } else {
+    dataDir = path.join(homeDir, '.local', 'share', 'Marketplace Finder');
+  }
+
+  // Create directory if it doesn't exist
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+    console.log(`Created user data directory: ${dataDir}`);
+  }
+
+  return dataDir;
 }
 
 // In-memory state
 let isRunning = false;
 let currentBrowser = null;
 let lastResult = { deals: [], params: null, ts: null };
-const RESULTS_PATH = path.join(__dirname, 'results.json');
-const NOTIFY_CONFIG_PATH = path.join(__dirname, 'notify-config.json');
+const USER_DATA_DIR = getUserDataDir();
+const RESULTS_PATH = path.join(USER_DATA_DIR, 'results.json');
+const NOTIFY_CONFIG_PATH = path.join(USER_DATA_DIR, 'notify-config.json');
 let intervalHandle = null;
 let notifyConfig = { webhookUrl: '', phoneNumber: '', enabled: false };
 
@@ -97,7 +175,7 @@ function saveNotifyConfig(config) {
 
 function sendNotification(deals) {
   if (!notifyConfig.enabled || !notifyConfig.webhookUrl || deals.length === 0) return;
-  const message = `Found ${deals.length} mower(s): ${deals.slice(0, 3).map(d => d.title + ' - ' + d.price).join(', ')}`;
+  const message = `Found ${deals.length} listing(s): ${deals.slice(0, 3).map(d => d.title + ' - ' + d.price).join(', ')}`;
   const payload = {
     phone: notifyConfig.phoneNumber,
     message: message,
@@ -250,11 +328,17 @@ async function runScrape(params) {
     currentBrowser = await puppeteer.launch(getPuppeteerConfig());
     const page = await currentBrowser.newPage();
 
-    // Set user agent to look more like a real browser
-    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    // Set random user agent to look more like a real browser (avoid bot detection)
+    await page.setUserAgent(randomUserAgent());
 
-    // Set viewport
-    await page.setViewport({ width: 1280, height: 720 });
+    // Set viewport with slight randomization
+    await page.setViewport({
+      width: randomInt(1200, 1400),
+      height: randomInt(700, 900)
+    });
+
+    // Random initial delay before loading (simulates human opening browser)
+    await randomDelay(1000, 3000);
 
     // CRITICAL: Override geolocation to match our target location
     const context = currentBrowser.defaultBrowserContext();
@@ -279,6 +363,12 @@ async function runScrape(params) {
 
     emitProgress('loading', 10, `Loading marketplace page for ${coords.name}...`);
     await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 120000 });
+
+    // Random delay after page load (human-like behavior)
+    await randomDelay(2000, 4000);
+
+    // Human-like mouse movements
+    await humanMouseMovement(page);
 
     // Check if we're on a login page
     const isLoginPage = await page.evaluate(() => {
@@ -315,16 +405,11 @@ async function runScrape(params) {
     }
 
     emitProgress('scrolling', 20, 'Loading more listings...');
-    // Try to scroll a bit to load items
+    // Use human-like scrolling pattern to avoid bot detection
     try {
-      await page.evaluate(async (desired) => {
-        for (let i = 0; i < 12; i++) {
-          window.scrollBy(0, document.body.scrollHeight);
-          await new Promise((r) => setTimeout(r, 700));
-          const count = document.querySelectorAll('a[href*="/marketplace/item/"]').length;
-          if (count >= desired) break;
-        }
-      }, limit);
+      await humanScroll(page, 12);
+      // Additional random delay after scrolling
+      await randomDelay(1000, 2000);
     } catch (_) {}
 
     emitProgress('extracting', 30, 'Extracting listing data...');
@@ -359,7 +444,15 @@ async function runScrape(params) {
       const deal = deals[i];
       try {
         emitProgress('descriptions', 40 + (i / deals.length) * 30, `Extracting descriptions (${i + 1}/${deals.length})...`);
-        const listingPage = await browser.newPage();
+
+        // Random delay between listing visits (human-like browsing)
+        await randomDelay(800, 2000);
+
+        const listingPage = await currentBrowser.newPage();
+
+        // Random user agent for each listing page
+        await listingPage.setUserAgent(randomUserAgent());
+
         // Apply cookies if available
         try {
           const cookies = JSON.parse(fs.readFileSync(path.join(__dirname, 'cookies.json'), 'utf8'));
@@ -369,7 +462,17 @@ async function runScrape(params) {
         } catch (err) {
           // No cookies
         }
+
         await listingPage.goto(deal.link, { waitUntil: 'networkidle2', timeout: 30000 });
+
+        // Human-like delay after page load
+        await randomDelay(1000, 2500);
+
+        // Occasional mouse movement on listing pages
+        if (Math.random() < 0.3) {
+          await humanMouseMovement(listingPage);
+        }
+
         const description = await listingPage.evaluate(() => {
           // Attempt to find the description element on Facebook Marketplace listing
           const descSelectors = [
@@ -503,237 +606,474 @@ const server = http.createServer((req, res) => {
       <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Mower Scraper Control</title>
+        <title>Marketplace Finder - Hunt for Deals</title>
         <style>
+          @keyframes gradient {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+          }
+          @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+          }
+          @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+          }
           * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
           }
           body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(-45deg, #ee7752, #e73c7e, #23a6d5, #23d5ab);
+            background-size: 400% 400%;
+            animation: gradient 15s ease infinite;
             min-height: 100vh;
-            display: flex;
-            align-items: flex-start;
-            justify-content: center;
-            padding: 32px;
+            padding: 20px;
           }
           .container {
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            padding: 40px;
-            max-width: 1200px;
-            width: 100%;
+            max-width: 1400px;
+            margin: 0 auto;
+            animation: fadeIn 0.6s ease;
+          }
+          .header {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(20px);
+            border-radius: 24px;
+            padding: 32px 40px;
+            margin-bottom: 24px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.3);
           }
           h1 {
+            font-size: 42px;
+            font-weight: 800;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+          }
+          .tagline {
+            font-size: 16px;
+            color: #666;
+            font-weight: 500;
+          }
+          .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+            margin-top: 16px;
+          }
+          .status-dot {
+            width: 8px;
+            height: 8px;
+            background: white;
+            border-radius: 50%;
+            animation: pulse 2s ease-in-out infinite;
+          }
+          .cards-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+            margin-bottom: 24px;
+          }
+          @media (max-width: 968px) {
+            .cards-container {
+              grid-template-columns: 1fr;
+            }
+          }
+          .card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(20px);
+            border-radius: 20px;
+            padding: 28px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+          }
+          .card-title {
+            font-size: 18px;
+            font-weight: 700;
             color: #333;
-            margin-bottom: 30px;
-            text-align: left;
-            font-size: 28px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+          }
+          .card-icon {
+            font-size: 24px;
           }
           .form-group {
-            margin-bottom: 20px;
+            margin-bottom: 18px;
           }
           label {
             display: block;
             margin-bottom: 8px;
-            color: #555;
-            font-weight: 500;
-            font-size: 14px;
+            color: #444;
+            font-weight: 600;
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
           }
           input, select {
             width: 100%;
-            padding: 12px;
-            border: 1px solid #ddd;
-            border-radius: 6px;
-            font-size: 14px;
-            transition: border-color 0.3s;
+            padding: 14px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            font-size: 15px;
+            transition: all 0.3s ease;
+            background: white;
           }
           input:focus, select:focus {
             outline: none;
             border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.1);
+            transform: translateY(-2px);
+          }
+          input::placeholder {
+            color: #aaa;
           }
           .button-group {
             display: flex;
-            gap: 10px;
-            margin-top: 30px;
+            gap: 12px;
           }
           button {
             flex: 1;
-            padding: 12px;
+            padding: 16px 24px;
             border: none;
-            border-radius: 6px;
-            font-size: 14px;
-            font-weight: 600;
+            border-radius: 12px;
+            font-size: 15px;
+            font-weight: 700;
             cursor: pointer;
-            transition: all 0.3s;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
           }
           .btn-start {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
           }
           .btn-start:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+            transform: translateY(-3px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.5);
+          }
+          .btn-start:active {
+            transform: translateY(-1px);
           }
           .btn-stop {
-            background: #f0f0f0;
-            color: #333;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            box-shadow: 0 4px 15px rgba(245, 87, 108, 0.4);
           }
           .btn-stop:hover {
-            background: #e0e0e0;
+            transform: translateY(-3px);
+            box-shadow: 0 6px 20px rgba(245, 87, 108, 0.5);
+          }
+          .btn-secondary {
+            background: white;
+            color: #333;
+            border: 2px solid #e0e0e0;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+          }
+          .btn-secondary:hover {
+            background: #f8f8f8;
+            border-color: #667eea;
+            transform: translateY(-2px);
+          }
+          .btn-login {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            color: white;
+            padding: 16px 24px;
+            border-radius: 12px;
+            border: none;
+            cursor: pointer;
+            font-weight: 700;
+            font-size: 15px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            box-shadow: 0 4px 15px rgba(17, 153, 142, 0.4);
+            transition: all 0.3s ease;
+          }
+          .btn-login:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 6px 20px rgba(17, 153, 142, 0.5);
           }
           .status {
             margin-top: 20px;
-            padding: 15px;
-            border-radius: 6px;
-            text-align: center;
-            font-weight: 500;
+            padding: 16px 20px;
+            border-radius: 12px;
+            font-weight: 600;
             display: none;
+            border-left: 4px solid;
           }
           .status.success {
-            background: #d4edda;
+            background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
             color: #155724;
-            border: 1px solid #c3e6cb;
+            border-color: #28a745;
             display: block;
           }
           .status.error {
-            background: #f8d7da;
+            background: linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%);
             color: #721c24;
-            border: 1px solid #f5c6cb;
+            border-color: #dc3545;
             display: block;
           }
-          .info {
-            background: #e7f3ff;
-            border-left: 4px solid #667eea;
-            padding: 15px;
-            border-radius: 4px;
+          .info-box {
+            background: linear-gradient(135deg, #e0f7fa 0%, #b2ebf2 100%);
+            border-left: 4px solid #00acc1;
+            padding: 16px 20px;
+            border-radius: 12px;
             margin-bottom: 20px;
+            font-size: 14px;
+            color: #00838f;
+            line-height: 1.6;
+          }
+          .results-card {
+            grid-column: 1 / -1;
+          }
+          .results-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 12px;
+          }
+          .results-actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+          }
+          .count-badge {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
             font-size: 13px;
-            color: #004085;
-            line-height: 1.5;
+            font-weight: 600;
+          }
+          table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+            border-radius: 12px;
+            overflow: hidden;
+          }
+          th {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            text-align: left;
+            padding: 16px;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 12px;
+            letter-spacing: 0.5px;
+          }
+          td {
+            padding: 14px 16px;
+            border-bottom: 1px solid #f0f0f0;
+            color: #333;
+          }
+          tr:hover {
+            background: #f8f9ff;
+          }
+          td a {
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 500;
+          }
+          td a:hover {
+            text-decoration: underline;
           }
         </style>
       </head>
       <body>
         <div class="container">
-          <h1>🚜 Mower Scraper</h1>
-          
-          <div class="info">
-            <strong>Status:</strong> Ready to scrape marketplace listings. Adjust parameters and click Start to begin.
+          <!-- Header -->
+          <div class="header">
+            <h1>🛍️ Marketplace Finder</h1>
+            <div class="tagline">Hunt for the best deals on Facebook Marketplace</div>
+            <div class="status-badge">
+              <div class="status-dot"></div>
+              Ready to Hunt
+            </div>
           </div>
 
-          <form id="scraperForm" onsubmit="event.preventDefault(); startScraper();">
-            <div class="form-group">
-              <label for="keywords">Keywords</label>
-              <input type="text" id="keywords" name="keywords" placeholder="e.g., riding mower, lawn tractor" value="riding mower">
+          <!-- Cards Grid -->
+          <div class="cards-container">
+            <!-- Authentication Card -->
+            <div class="card">
+              <div class="card-title">
+                <span class="card-icon">🔐</span>
+                Authentication
+              </div>
+              <div class="info-box">
+                <strong>First Step:</strong> Log into Facebook before starting the scraper
+              </div>
+              <button type="button" onclick="simpleLogin()" class="btn-login">
+                Login to Facebook
+              </button>
+              <div id="loginStatus" style="margin-top:12px;color:#666;font-size:13px;font-weight:600"></div>
             </div>
 
-            <div class="form-group">
-              <label for="location">Location (zip code for best results)</label>
-              <input type="text" id="location" name="location" placeholder="e.g., 37138, 90210, newyork">
+            <!-- Search Parameters Card -->
+            <div class="card">
+              <div class="card-title">
+                <span class="card-icon">🔍</span>
+                Search Settings
+              </div>
+              <form id="scraperForm" onsubmit="event.preventDefault(); startScraper();">
+                <div class="form-group">
+                  <label for="keywords">What are you looking for?</label>
+                  <input type="text" id="keywords" name="keywords" placeholder="e.g., furniture, electronics, mowers" value="">
+                </div>
+
+                <div class="form-group">
+                  <label for="location">Location</label>
+                  <input type="text" id="location" name="location" placeholder="e.g., 37138, Nashville, 90210">
+                </div>
+
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+                  <div class="form-group" style="margin-bottom:0;">
+                    <label for="radius">Radius (miles)</label>
+                    <input type="number" id="radius" name="radius" placeholder="25" value="25" min="1" max="100">
+                  </div>
+                  <div class="form-group" style="margin-bottom:0;">
+                    <label for="limit">Max Results</label>
+                    <input type="number" id="limit" name="limit" placeholder="10" value="10" min="1" max="100">
+                  </div>
+                </div>
+
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top:18px;">
+                  <div class="form-group" style="margin-bottom:0;">
+                    <label for="minPrice">Min Price ($)</label>
+                    <input type="number" id="minPrice" name="minPrice" placeholder="0" value="0" min="0">
+                  </div>
+                  <div class="form-group" style="margin-bottom:0;">
+                    <label for="maxPrice">Max Price ($)</label>
+                    <input type="number" id="maxPrice" name="maxPrice" placeholder="5000" value="5000" min="0">
+                  </div>
+                </div>
+              </form>
             </div>
 
-            <div class="form-group">
-              <button type="button" onclick="simpleLogin()" style="padding:12px 20px;background:#28a745;color:white;border:none;border-radius:6px;cursor:pointer;font-size:16px;font-weight:bold;">🔐 Login to Facebook First (REQUIRED)</button>
-              <span id="loginStatus" style="margin-left:10px;color:#666;font-size:13px"></span>
-              <p style="margin:8px 0 0 0;color:#666;font-size:12px;">Click this button BEFORE starting the scraper. Log in to Facebook, then close the browser window.</p>
+            <!-- Advanced Filters Card -->
+            <div class="card">
+              <div class="card-title">
+                <span class="card-icon">🎯</span>
+                Advanced Filters
+              </div>
+              <div class="form-group">
+                <label for="titleKeywords">Title Keywords (optional)</label>
+                <input type="text" id="titleKeywords" name="titleKeywords" placeholder="e.g., john deere, brand new">
+              </div>
+
+              <div class="form-group">
+                <label for="descriptionKeywords">Description Keywords (optional)</label>
+                <input type="text" id="descriptionKeywords" name="descriptionKeywords" placeholder="e.g., excellent condition, barely used">
+              </div>
+
+              <div class="form-group">
+                <label for="interval">Auto-Refresh Interval (seconds)</label>
+                <input type="number" id="interval" name="interval" placeholder="300" value="300" min="10">
+              </div>
             </div>
 
-            <div class="form-group">
-              <label for="radius">Search Radius (miles)</label>
-              <input type="number" id="radius" name="radius" placeholder="25" value="25" min="1" max="100">
+            <!-- Notifications Card -->
+            <div class="card">
+              <div class="card-title">
+                <span class="card-icon">📱</span>
+                Notifications
+              </div>
+              <div class="form-group">
+                <label for="webhookUrl">Webhook URL (IFTTT/Zapier)</label>
+                <input type="text" id="webhookUrl" name="webhookUrl" placeholder="https://maker.ifttt.com/trigger/...">
+              </div>
+
+              <div class="form-group">
+                <label for="phoneNumber">Phone Number</label>
+                <input type="tel" id="phoneNumber" name="phoneNumber" placeholder="+1234567890">
+              </div>
+
+              <div class="form-group" style="margin-bottom:0;">
+                <label style="display:flex;align-items:center;gap:10px;cursor:pointer;text-transform:none;">
+                  <input type="checkbox" id="notifyEnabled" name="notifyEnabled" style="width:20px;height:20px;cursor:pointer;">
+                  <span>Enable notifications for new deals</span>
+                </label>
+              </div>
             </div>
 
-            <div class="form-group">
-              <label for="maxPrice">Max Price ($)</label>
-              <input type="number" id="maxPrice" name="maxPrice" placeholder="5000" value="5000" min="0">
+            <!-- Control Panel Card -->
+            <div class="card" style="grid-column: 1 / -1;">
+              <div class="card-title">
+                <span class="card-icon">🎮</span>
+                Control Panel
+              </div>
+              <div class="button-group">
+                <button type="submit" class="btn-start" onclick="event.preventDefault(); startScraper();">
+                  ▶️ Start Hunting
+                </button>
+                <button type="button" class="btn-stop" onclick="stopScraper()">
+                  ⏹️ Stop
+                </button>
+                <button type="button" class="btn-secondary" onclick="saveNotify()">
+                  💾 Save Settings
+                </button>
+              </div>
+              <div id="status" class="status"></div>
             </div>
 
-            <div class="form-group">
-              <label for="minPrice">Min Price ($)</label>
-              <input type="number" id="minPrice" name="minPrice" placeholder="0" value="0" min="0">
+            <!-- Results Card -->
+            <div class="card results-card">
+              <div class="results-header">
+                <div class="card-title" style="margin-bottom:0;">
+                  <span class="card-icon">💎</span>
+                  Latest Finds
+                </div>
+                <div class="results-actions">
+                  <span id="count" class="count-badge">0 deals found</span>
+                  <a id="dlCsv" href="/api/csv" class="btn-secondary" style="text-decoration:none;display:inline-block;padding:10px 18px;border-radius:10px;color:#333;font-size:13px;">
+                    ⬇️ Download CSV
+                  </a>
+                  <button type="button" id="copyCsv" class="btn-secondary" style="padding:10px 18px;font-size:13px;">
+                    📋 Copy CSV
+                  </button>
+                </div>
+              </div>
+
+              <div style="overflow:auto; border-radius:12px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
+                <table id="resultsTable">
+                  <thead>
+                    <tr>
+                      <th>Title</th>
+                      <th>Price</th>
+                      <th>Sold (30d)</th>
+                      <th>Avg Sold</th>
+                      <th>Margin %</th>
+                      <th>Profit</th>
+                      <th>Description</th>
+                      <th>Link</th>
+                    </tr>
+                  </thead>
+                  <tbody id="resultsBody"></tbody>
+                </table>
+              </div>
+
+              <div id="meta" style="margin-top:12px;color:#888;font-size:12px;font-weight:500"></div>
             </div>
-
-            <div class="form-group">
-              <label for="limit">Results Limit</label>
-              <input type="number" id="limit" name="limit" placeholder="10" value="10" min="1" max="100">
-            </div>
-
-            <div class="form-group">
-              <label for="titleKeywords">Title Keywords (comma-separated, optional)</label>
-              <input type="text" id="titleKeywords" name="titleKeywords" placeholder="e.g., john deere, husqvarna">
-            </div>
-
-            <div class="form-group">
-              <label for="descriptionKeywords">Description Keywords (comma-separated, optional)</label>
-              <input type="text" id="descriptionKeywords" name="descriptionKeywords" placeholder="e.g., running, good condition">
-            </div>
-
-            <div class="form-group">
-              <label for="interval">Refresh Interval (seconds)</label>
-              <input type="number" id="interval" name="interval" placeholder="300" value="300" min="10">
-            </div>
-
-            <div class="form-group">
-              <label for="webhookUrl">Webhook URL (for SMS via IFTTT/Zapier)</label>
-              <input type="text" id="webhookUrl" name="webhookUrl" placeholder="https://maker.ifttt.com/trigger/...">
-            </div>
-
-            <div class="form-group">
-              <label for="phoneNumber">Phone Number (optional, sent in webhook)</label>
-              <input type="tel" id="phoneNumber" name="phoneNumber" placeholder="+1234567890">
-            </div>
-
-            <div class="form-group">
-              <label style="display:flex;align-items:center;gap:8px;">
-                <input type="checkbox" id="notifyEnabled" name="notifyEnabled" style="width:auto;">
-                <span>Enable notifications</span>
-              </label>
-            </div>
-
-            <div class="button-group">
-              <button type="submit" class="btn-start">▶ Start Scraper</button>
-              <button type="button" class="btn-stop" onclick="stopScraper()">⏹ Stop</button>
-            </div>
-
-            <div style="margin-top:12px;">
-              <button type="button" class="btn-stop" style="width:100%;" onclick="saveNotify()">💾 Save Notification Settings</button>
-            </div>
-
-            <div id="status" class="status"></div>
-          </form>
-
-          <div style="margin-top:30px">
-            <h2 style="font-size:20px;margin-bottom:10px;color:#333">Latest Results</h2>
-            <div style="display:flex; gap:10px; margin: 0 0 12px 0; align-items:center;">
-              <a id="dlCsv" href="/api/csv" class="btn-start" style="text-decoration:none;display:inline-block;padding:8px 12px;border-radius:6px;color:#fff;">⬇ Download CSV</a>
-              <button type="button" id="copyCsv" class="btn-stop" style="padding:8px 12px;">Copy CSV</button>
-              <span id="count" style="color:#555;font-size:13px"></span>
-            </div>
-
-            <div style="overflow:auto; border:1px solid #eee; border-radius:8px;">
-              <table id="resultsTable" style="width:100%; border-collapse:collapse; min-width:1200px;">
-                <thead>
-                  <tr style="background:#f5f5ff">
-                    <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Title</th>
-                    <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Price</th>
-                    <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Sold (30d)</th>
-                    <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Avg Sold</th>
-                    <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Margin %</th>
-                    <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Profit</th>
-                    <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Description</th>
-                    <th style="text-align:left; padding:10px; border-bottom:1px solid #eee;">Link</th>
-                  </tr>
-                </thead>
-                <tbody id="resultsBody"></tbody>
-              </table>
-            </div>
-
-            <div id="meta" style="margin-top:8px;color:#666;font-size:12px"></div>
           </div>
         </div>
 
@@ -744,13 +1084,19 @@ const server = http.createServer((req, res) => {
             const count = document.getElementById('count');
             body.innerHTML = '';
             const deals = (data && Array.isArray(data.deals)) ? data.deals : [];
+
+            // Update count badge
+            count.textContent = deals.length === 1 ? '1 deal found' : deals.length + ' deals found';
+
             if (deals.length === 0) {
               const tr = document.createElement('tr');
               const td = document.createElement('td');
               td.colSpan = 8;
-              td.style.color = '#666';
-              td.style.padding = '12px';
-              td.textContent = 'No results yet.';
+              td.style.color = '#999';
+              td.style.padding = '40px 20px';
+              td.style.textAlign = 'center';
+              td.style.fontSize = '16px';
+              td.innerHTML = '🔍 No deals found yet. Start hunting to see results!';
               tr.appendChild(td);
               body.appendChild(tr);
             } else {
@@ -1023,21 +1369,33 @@ const server = http.createServer((req, res) => {
           const errorMsg = err && err.message ? err.message : String(err);
           saveResults([], { ...params, error: errorMsg, errorStack: err.stack });
         })
-        .finally(() => { isRunning = false; });
+        .finally(() => {
+          isRunning = false;
+
+          // Schedule next run with randomized delay to avoid bot detection
+          if (intervalSec > 0 && intervalHandle !== null) {
+            // Randomize interval: base interval ±20% (e.g., 5min becomes 4-6min)
+            const minDelay = intervalSec * 0.8;
+            const maxDelay = intervalSec * 1.2;
+            const randomizedDelay = Math.floor(Math.random() * (maxDelay - minDelay) + minDelay) * 1000;
+            console.log(`Next scrape in ${Math.floor(randomizedDelay / 1000 / 60)} minutes ${Math.floor((randomizedDelay / 1000) % 60)} seconds`);
+            intervalHandle = setTimeout(kick, randomizedDelay);
+          }
+        });
     };
 
     // Clear any existing schedule
     if (intervalHandle) {
-      clearInterval(intervalHandle);
+      clearTimeout(intervalHandle);
       intervalHandle = null;
     }
 
     // Run immediately
     kick();
 
-    // Schedule next runs if interval provided
+    // Set intervalHandle to a non-null value to indicate scheduling is active
     if (intervalSec > 0) {
-      intervalHandle = setInterval(kick, intervalSec * 1000);
+      intervalHandle = true; // Will be replaced by setTimeout after first run
     }
 
     res.end(JSON.stringify({ success: true, message: 'Scraper started', scheduled: intervalSec > 0 }));
@@ -1049,7 +1407,12 @@ const server = http.createServer((req, res) => {
       });
     }
     isRunning = false;
-    if (intervalHandle) { clearInterval(intervalHandle); intervalHandle = null; }
+    if (intervalHandle) {
+      if (typeof intervalHandle === 'object') {
+        clearTimeout(intervalHandle);
+      }
+      intervalHandle = null;
+    }
     res.end(JSON.stringify({ success: true, message: 'Scraper stopped' }));
   } else if (pathname === '/api/results') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1059,7 +1422,7 @@ const server = http.createServer((req, res) => {
     const csv = toCSV(lastResult.deals || []);
     res.writeHead(200, {
       'Content-Type': 'text/csv; charset=utf-8',
-      'Content-Disposition': `attachment; filename="mower-results-${ts}.csv"`
+      'Content-Disposition': `attachment; filename="marketplace-results-${ts}.csv"`
     });
     res.end(csv);
   } else if (pathname === '/api/notify' && req.method === 'GET') {
@@ -1683,5 +2046,5 @@ const server = http.createServer((req, res) => {
 
 const PORT = process.env.PORT || 8020;
 server.listen(PORT, () => {
-  console.log(`🚀 Mower Scraper UI running on http://localhost:${PORT}`);
+  console.log(`🚀 Marketplace Finder UI running on http://localhost:${PORT}`);
 });

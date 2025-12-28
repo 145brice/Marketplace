@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Marketplace Finder</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100vh;
+            overflow: hidden;
+        }
+        #loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            font-size: 24px;
+        }
+        iframe {
+            width: 100%;
+            height: 100vh;
+            border: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">Loading Marketplace Finder...</div>
+    <script>
+        // Wait for the server to be ready, then load the UI
+        function tryLoadServer() {
+            fetch('http://localhost:8020')
+                .then(response => {
+                    if (response.ok) {
+                        document.getElementById('loading').style.display = 'none';
+                        const iframe = document.createElement('iframe');
+                        iframe.src = 'http://localhost:8020';
+                        document.body.appendChild(iframe);
+                    } else {
+                        setTimeout(tryLoadServer, 100);
+                    }
+                })
+                .catch(() => {
+                    setTimeout(tryLoadServer, 100);
+                });
+        }
+
+        // Start trying to connect after a short delay to let the server start
+        setTimeout(tryLoadServer, 2000);
+    </script>
+</body>
+</html>

@@ -1,0 +1,52 @@
+{
+  "productName": "Marketplace Finder",
+  "identifier": "com.marketplace.finder",
+  "version": "1.0.0",
+  "build": {
+    "beforeDevCommand": "npm start",
+    "beforeBuildCommand": "",
+    "devUrl": "http://localhost:8020",
+    "frontendDist": "../dist"
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.png"
+    ],
+    "resources": [
+      "../server.js",
+      "../package.json",
+      "../node_modules"
+    ],
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": ""
+    },
+    "macOS": {
+      "entitlements": null,
+      "exceptionDomain": "",
+      "frameworks": [],
+      "providerShortName": null,
+      "signingIdentity": null
+    }
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Marketplace Finder",
+        "width": 1400,
+        "height": 900,
+        "resizable": true,
+        "fullscreen": false,
+        "url": "http://localhost:8020"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  }
+}
