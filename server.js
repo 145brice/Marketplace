@@ -314,14 +314,16 @@ async function runScrape(params) {
   console.log(`Using location: ${coords.name} (${coords.lat}, ${coords.lng})`);
 
   const baseUrl = 'https://www.facebook.com/marketplace';
+  const titleKeywords = (params.titleKeywords || '').trim();
+  const descriptionKeywords = (params.descriptionKeywords || '').trim();
+
+  // Build search URL: use keywords if provided, otherwise search all categories
   const targetUrl = keywords
     ? `${baseUrl}/search/?query=${encodeURIComponent(keywords)}&latitude=${coords.lat}&longitude=${coords.lng}&radius=${radius}`
-    : `${baseUrl}/category/riding-lawn-mowers?latitude=${coords.lat}&longitude=${coords.lng}&radius=${radius}`;
+    : `${baseUrl}/?latitude=${coords.lat}&longitude=${coords.lng}&radius=${radius}`;
   console.log('Target URL:', targetUrl); // Debug logging
   const minPrice = isFinite(Number(params.minPrice)) ? Number(params.minPrice) : null;
   const maxPrice = isFinite(Number(params.maxPrice)) ? Number(params.maxPrice) : null;
-  const titleKeywords = (params.titleKeywords || '').trim();
-  const descriptionKeywords = (params.descriptionKeywords || '').trim();
 
   let deals = [];
   try {
@@ -904,6 +906,10 @@ const server = http.createServer((req, res) => {
             margin-left: 4px;
             font-weight: 700;
           }
+          th .required {
+            color: #fff;
+            text-shadow: 0 0 3px rgba(231, 76, 60, 0.8);
+          }
         </style>
       </head>
       <body>
@@ -943,12 +949,12 @@ const server = http.createServer((req, res) => {
               </div>
               <form id="scraperForm" onsubmit="event.preventDefault(); startScraper();">
                 <div class="form-group">
-                  <label for="keywords">What are you looking for?<span class="required">*</span></label>
-                  <input type="text" id="keywords" name="keywords" placeholder="e.g., furniture, electronics, mowers" value="" required>
+                  <label for="keywords">What are you looking for?</label>
+                  <input type="text" id="keywords" name="keywords" placeholder="e.g., furniture, electronics, mowers" value="">
                 </div>
 
                 <div class="form-group">
-                  <label for="location">Location<span class="required">*</span></label>
+                  <label for="location">Location</label>
                   <input type="text" id="location" name="location" placeholder="e.g., 37138, Nashville, 90210" required>
                 </div>
 
@@ -1064,8 +1070,8 @@ const server = http.createServer((req, res) => {
                 <table id="resultsTable">
                   <thead>
                     <tr>
-                      <th>Title</th>
-                      <th>Description</th>
+                      <th>Title <span class="required">*</span></th>
+                      <th>Description <span class="required">*</span></th>
                       <th>Price</th>
                       <th>Profit</th>
                       <th>Margin %</th>
