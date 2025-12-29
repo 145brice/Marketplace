@@ -1066,13 +1066,20 @@ const server = http.createServer((req, res) => {
                 tdTitle.style.padding = '10px';
                 tdTitle.style.borderBottom = '1px solid #f0f0f0';
                 const titleLink = document.createElement('a');
-                titleLink.href = d.link;
-                titleLink.target = '_blank';
-                titleLink.rel = 'noopener noreferrer';
+                titleLink.href = '#';
                 titleLink.style.color = '#333';
                 titleLink.style.textDecoration = 'none';
                 titleLink.style.cursor = 'pointer';
                 titleLink.textContent = d.title || 'No title';
+                titleLink.addEventListener('click', function(e) {
+                  e.preventDefault();
+                  // Open in new window/tab
+                  const newWindow = window.open(d.link, '_blank', 'noopener,noreferrer');
+                  if (!newWindow) {
+                    // Fallback: navigate in same window
+                    window.location.href = d.link;
+                  }
+                });
                 titleLink.addEventListener('mouseenter', function() { this.style.color = '#667eea'; this.style.textDecoration = 'underline'; });
                 titleLink.addEventListener('mouseleave', function() { this.style.color = '#333'; this.style.textDecoration = 'none'; });
                 tdTitle.appendChild(titleLink);
@@ -1093,13 +1100,20 @@ const server = http.createServer((req, res) => {
                 tdLink.style.padding = '10px';
                 tdLink.style.borderBottom = '1px solid #f0f0f0';
                 const a = document.createElement('a');
-                a.href = d.link;
-                a.target = '_blank';
-                a.rel = 'noopener noreferrer';
+                a.href = '#';
                 a.style.color = '#667eea';
                 a.style.cursor = 'pointer';
                 a.style.textDecoration = 'none';
                 a.textContent = 'Open';
+                a.addEventListener('click', function(e) {
+                  e.preventDefault();
+                  // Open in new window/tab
+                  const newWindow = window.open(d.link, '_blank', 'noopener,noreferrer');
+                  if (!newWindow) {
+                    // Fallback: navigate in same window
+                    window.location.href = d.link;
+                  }
+                });
                 tdLink.appendChild(a);
                 tr.appendChild(tdLink);
 
@@ -1919,6 +1933,34 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ success: false, error: err.message }));
       }
     })();
+  } else if (pathname === '/api/open-url' && req.method === 'POST') {
+    // Open URL in system browser
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { url } = JSON.parse(body);
+        if (url) {
+          const { exec } = require('child_process');
+          exec(`open "${url}"`, (err) => {
+            if (err) {
+              console.error('Error opening URL:', err);
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, error: err.message }));
+            } else {
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: true }));
+            }
+          });
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: 'No URL provided' }));
+        }
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
   } else if (pathname === '/api/progress') {
     // Server-Sent Events for progress updates
     res.writeHead(200, {
