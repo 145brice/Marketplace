@@ -51,7 +51,14 @@
   },
   "plugins": {
     "shell": {
-      "open": true
+      "open": ".*",
+      "scope": [
+        {
+          "name": "open-url",
+          "cmd": "open",
+          "args": true
+        }
+      ]
     }
   }
 }

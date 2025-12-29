@@ -55,7 +55,7 @@ function getPuppeteerConfig(forLogin = false) {
   // Base config with user data directory for persistent sessions (keeps Facebook login)
   const baseConfig = {
     userDataDir: path.join(getUserDataDir(), 'browser-data'),
-    headless: forLogin ? false : true  // Visible for login, hidden for scraping
+    headless: forLogin ? false : 'new'  // Visible for login, new headless mode for scraping
   };
 
   if (isProduction) {
@@ -408,6 +408,13 @@ async function runScrape(params) {
     }
 
     emitProgress('scrolling', 20, 'Loading more listings...');
+    // Wait for listings to appear
+    try {
+      await page.waitForSelector('a[href*="/marketplace/item/"]', { timeout: 10000 });
+    } catch (e) {
+      console.log('No listings found or page not loaded');
+    }
+
     // Use human-like scrolling pattern to avoid bot detection
     try {
       await humanScroll(page, 12);
@@ -416,30 +423,69 @@ async function runScrape(params) {
     } catch (_) {}
 
     emitProgress('extracting', 30, 'Extracting listing data...');
-    deals = await page.evaluate((desired) => {
-      const anchors = Array.from(document.querySelectorAll('a[href*="/marketplace/item/"]'));
-      const uniq = new Map();
-      for (const a of anchors) {
-        const href = a.getAttribute('href');
-        if (href && !uniq.has(href)) uniq.set(href, a);
-      }
-      const items = Array.from(uniq.values()).slice(0, desired).map((a) => {
-        const href = a.getAttribute('href') || '';
-        const link = href.startsWith('http') ? href : ('https://www.facebook.com' + href);
-        const container = a.closest('[role="article"]') || a.parentElement || a;
-        let title = 'No title';
-        let price = 'N/A';
-        const spans = Array.from(container.querySelectorAll('span')).map((s) => s.textContent || '').filter(Boolean);
-        if (spans.length) {
-          const priceCandidate = spans.find((t) => /\$?\d[\d,]*(?:\.\d{2})?/.test(t));
-          if (priceCandidate) price = priceCandidate;
-          const titleCandidate = spans.find((t) => t && t.length > 3 && t !== priceCandidate);
-          if (titleCandidate) title = titleCandidate;
+    // Wait a moment for page to stabilize
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    try {
+      deals = await page.evaluate((desired) => {
+        const anchors = Array.from(document.querySelectorAll('a[href*="/marketplace/item/"]'));
+        const uniq = new Map();
+        for (const a of anchors) {
+          const href = a.getAttribute('href');
+          if (href && !uniq.has(href)) uniq.set(href, a);
         }
-        return { title, price, link };
-      });
-      return items;
-    }, limit);
+        const items = Array.from(uniq.values()).slice(0, desired).map((a) => {
+          const href = a.getAttribute('href') || '';
+          const link = href.startsWith('http') ? href : ('https://www.facebook.com' + href);
+          const container = a.closest('[role="article"]') || a.parentElement || a;
+          let title = 'No title';
+          let price = 'N/A';
+          const spans = Array.from(container.querySelectorAll('span')).map((s) => s.textContent || '').filter(Boolean);
+          if (spans.length) {
+            const priceCandidate = spans.find((t) => /\$?\d[\d,]*(?:\.\d{2})?/.test(t));
+            if (priceCandidate) price = priceCandidate;
+            const titleCandidate = spans.find((t) => t && t.length > 3 && t !== priceCandidate);
+            if (titleCandidate) title = titleCandidate;
+          }
+          return { title, price, link };
+        });
+        return items;
+      }, limit);
+    } catch (err) {
+      console.error('Error extracting deals:', err.message);
+      // If frame detached, reload and try again
+      if (err.message.includes('detached')) {
+        console.log('Frame detached, reloading page...');
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        deals = await page.evaluate((desired) => {
+          const anchors = Array.from(document.querySelectorAll('a[href*="/marketplace/item/"]'));
+          const uniq = new Map();
+          for (const a of anchors) {
+            const href = a.getAttribute('href');
+            if (href && !uniq.has(href)) uniq.set(href, a);
+          }
+          const items = Array.from(uniq.values()).slice(0, desired).map((a) => {
+            const href = a.getAttribute('href') || '';
+            const link = href.startsWith('http') ? href : ('https://www.facebook.com' + href);
+            const container = a.closest('[role="article"]') || a.parentElement || a;
+            let title = 'No title';
+            let price = 'N/A';
+            const spans = Array.from(container.querySelectorAll('span')).map((s) => s.textContent || '').filter(Boolean);
+            if (spans.length) {
+              const priceCandidate = spans.find((t) => /\$?\d[\d,]*(?:\.\d{2})?/.test(t));
+              if (priceCandidate) price = priceCandidate;
+              const titleCandidate = spans.find((t) => t && t.length > 3 && t !== priceCandidate);
+              if (titleCandidate) title = titleCandidate;
+            }
+            return { title, price, link };
+          });
+          return items;
+        }, limit);
+      } else {
+        throw err;
+      }
+    }
 
     // Extract descriptions from individual listings
     emitProgress('descriptions', 40, `Extracting descriptions (0/${deals.length})...`);
@@ -1125,11 +1171,16 @@ const server = http.createServer((req, res) => {
                 titleLink.style.textDecoration = 'none';
                 titleLink.style.cursor = 'pointer';
                 titleLink.textContent = d.title || 'No title';
-                titleLink.addEventListener('click', function(e) {
+                titleLink.addEventListener('click', async function(e) {
                   e.preventDefault();
-                  // Try Tauri opener first, fallback to window.open
-                  if (window.__TAURI__ && window.__TAURI__.shell) {
-                    window.__TAURI__.shell.open(d.link);
+                  // Use custom Tauri command to open URLs
+                  if (window.__TAURI_INVOKE__) {
+                    try {
+                      await window.__TAURI_INVOKE__('open_url', { url: d.link });
+                    } catch (err) {
+                      console.error('Failed to open URL:', err);
+                      window.open(d.link, '_blank');
+                    }
                   } else {
                     window.open(d.link, '_blank');
                   }
@@ -1219,11 +1270,16 @@ const server = http.createServer((req, res) => {
                 a.style.color = '#667eea';
                 a.style.cursor = 'pointer';
                 a.textContent = 'Open';
-                a.addEventListener('click', function(e) {
+                a.addEventListener('click', async function(e) {
                   e.preventDefault();
-                  // Try Tauri opener first, fallback to window.open
-                  if (window.__TAURI__ && window.__TAURI__.shell) {
-                    window.__TAURI__.shell.open(d.link);
+                  // Use custom Tauri command to open URLs
+                  if (window.__TAURI_INVOKE__) {
+                    try {
+                      await window.__TAURI_INVOKE__('open_url', { url: d.link });
+                    } catch (err) {
+                      console.error('Failed to open URL:', err);
+                      window.open(d.link, '_blank');
+                    }
                   } else {
                     window.open(d.link, '_blank');
                   }
