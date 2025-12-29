@@ -487,76 +487,7 @@ async function runScrape(params) {
       }
     }
 
-    // Extract descriptions from individual listings
-    emitProgress('descriptions', 40, `Extracting descriptions (0/${deals.length})...`);
-    for (let i = 0; i < deals.length; i++) {
-      const deal = deals[i];
-      try {
-        emitProgress('descriptions', 40 + (i / deals.length) * 30, `Extracting descriptions (${i + 1}/${deals.length})...`);
-
-        // Random delay between listing visits (human-like browsing)
-        await randomDelay(800, 2000);
-
-        const listingPage = await currentBrowser.newPage();
-
-        // Random user agent for each listing page
-        await listingPage.setUserAgent(randomUserAgent());
-
-        // Apply cookies if available
-        try {
-          const cookies = JSON.parse(fs.readFileSync(path.join(__dirname, 'cookies.json'), 'utf8'));
-          if (Array.isArray(cookies) && cookies.length) {
-            await listingPage.setCookie(...cookies);
-          }
-        } catch (err) {
-          // No cookies
-        }
-
-        await listingPage.goto(deal.link, { waitUntil: 'networkidle2', timeout: 30000 });
-
-        // Human-like delay after page load
-        await randomDelay(1000, 2500);
-
-        // Occasional mouse movement on listing pages
-        if (Math.random() < 0.3) {
-          await humanMouseMovement(listingPage);
-        }
-
-        const description = await listingPage.evaluate(() => {
-          // Attempt to find the description element on Facebook Marketplace listing
-          const descSelectors = [
-            'div[data-testid="marketplace-listing-description"]',
-            'span[data-ad-preview="message"]',
-            'div[data-pagelet="MainColumn"] span[dir="auto"]',
-            'div[role="main"] span',
-            'p[dir="auto"]'
-          ];
-          for (const selector of descSelectors) {
-            const el = document.querySelector(selector);
-            if (el && el.innerText && el.innerText.length > 10) {
-              return el.innerText.trim();
-            }
-          }
-          return '';
-        });
-        deal.description = description;
-        await listingPage.close();
-      } catch (e) {
-        deal.description = '';
-      }
-    }
-
-    // Filter based on description content
-    deals = deals.filter(d => {
-      const desc = (d.description || '').toLowerCase();
-      // Exclude listings that are clearly parts only or broken
-      if (desc.includes('parts only') || desc.includes('for parts') || desc.includes('not working') || desc.includes('broken') || desc.includes('needs repair')) {
-        return false;
-      }
-      return true;
-    });
-
-    emitProgress('filtering', 75, 'Filtering results...');
+    emitProgress('filtering', 70, 'Filtering results...');
     // Filter based on title and description keywords
     if (titleKeywords) {
       const titleKeys = titleKeywords.split(',').map(k => k.trim().toLowerCase()).filter(k => k);
@@ -594,34 +525,8 @@ async function runScrape(params) {
         if (maxPrice != null && (d.priceNumber == null || d.priceNumber > maxPrice)) return false;
         return true;
       })
-      .slice(0, limit);
-
-    emitProgress('processing', 85, 'Processing sold history...');
-    // Extract models and fetch sold history
-    const models = deals.map(d => extractModel(d.title)).filter(Boolean);
-    const soldHistory = await fetchSoldHistory([...new Set(models)], page, coords, radius);
-
-    // Attach sold data to each deal
-    deals = deals.map(d => {
-      const model = extractModel(d.title);
-      const sold = soldHistory[model] || { sold: 0, avg: 0, low: 0, high: 0 };
-      const buyPrice = d.priceNumber || 0;
-      const fixCost = 12; // default carb fix
-      const profitLow = sold.low > 0 ? sold.low - buyPrice - fixCost : 0;
-      const profitHigh = sold.high > 0 ? sold.high - buyPrice - fixCost : 0;
-      const marginFromAvg = sold.avg > 0 ? ((sold.avg - buyPrice) / sold.avg * 100) : 0;
-      return {
-        ...d,
-        model,
-        soldHistory: sold,
-        avgSold: sold.avg || 0,
-        profitRange: sold.sold > 0 ? `$${profitLow}–$${profitHigh}` : 'no data',
-        profitScore: sold.sold > 0 ? profitHigh : -Infinity,
-        marginFromAvg: marginFromAvg,
-        fixCost,
-        flipTime: sold.sold > 2 ? '9 days' : 'unknown'
-      };
-    }).sort((a, b) => (b.marginFromAvg || -Infinity) - (a.marginFromAvg || -Infinity));
+      .slice(0, limit)
+      .sort((a, b) => (a.priceNumber || 0) - (b.priceNumber || 0)); // Sort by price (lowest first)
 
     emitProgress('saving', 95, 'Saving results...');
     saveResults(deals, { ...params, url: targetUrl });
@@ -1117,12 +1022,7 @@ const server = http.createServer((req, res) => {
                   <thead>
                     <tr>
                       <th>Title <span class="required">*</span></th>
-                      <th>Description <span class="required">*</span></th>
                       <th>Price</th>
-                      <th>Profit</th>
-                      <th>Margin %</th>
-                      <th>Sold (30d)</th>
-                      <th>Avg Sold</th>
                       <th>Link</th>
                     </tr>
                   </thead>
@@ -1189,78 +1089,17 @@ const server = http.createServer((req, res) => {
                 titleLink.addEventListener('mouseleave', function() { this.style.color = '#333'; this.style.textDecoration = 'none'; });
                 tdTitle.appendChild(titleLink);
 
-                // Description column (moved up for visibility)
-                const tdDescription = document.createElement('td');
-                tdDescription.style.padding = '10px';
-                tdDescription.style.borderBottom = '1px solid #f0f0f0';
-                tdDescription.style.fontSize = '12px';
-                tdDescription.style.color = '#666';
-                tdDescription.style.maxWidth = '300px';
-                tdDescription.style.wordWrap = 'break-word';
-                tdDescription.textContent = (d.description || '').substring(0, 150) + ((d.description || '').length > 150 ? '...' : '');
-
                 const tdPrice = document.createElement('td');
                 tdPrice.style.padding = '10px';
                 tdPrice.style.borderBottom = '1px solid #f0f0f0';
+                tdPrice.style.fontSize = '14px';
+                tdPrice.style.fontWeight = '600';
+                tdPrice.style.color = '#27ae60';
                 tdPrice.textContent = d.price || (d.priceNumber != null ? ('$' + d.priceNumber) : 'N/A');
 
-                // Profit column (moved up - KEY metric!)
-                const tdProfit = document.createElement('td');
-                tdProfit.style.padding = '10px';
-                tdProfit.style.borderBottom = '1px solid ' + '#f0f0f0';
-                tdProfit.style.fontSize = '13px';
-                tdProfit.style.fontWeight = '600';
-                if (d.profitRange && d.profitRange !== 'no data') {
-                  tdProfit.style.color = '#27ae60';
-                  tdProfit.innerHTML = d.profitRange + '<br><span style="color:#999;font-size:11px;font-weight:400">Fix: $' + (d.fixCost || 12) + ' · ' + (d.flipTime || '9 days') + '</span>';
-                } else {
-                  tdProfit.style.color = '#999';
-                  tdProfit.textContent = 'no data';
-                }
-
-                const tdMargin = document.createElement('td');
-                tdMargin.style.padding = '10px';
-                tdMargin.style.borderBottom = '1px solid #f0f0f0';
-                tdMargin.style.fontSize = '13px';
-                tdMargin.style.fontWeight = '600';
-                if (d.marginFromAvg != null && d.marginFromAvg >= 0) {
-                  tdMargin.style.color = d.marginFromAvg >= 15 ? '#27ae60' : d.marginFromAvg >= 0 ? '#f39c12' : '#e74c3c';
-                  tdMargin.textContent = d.marginFromAvg.toFixed(1) + '%';
-                } else {
-                  tdMargin.style.color = '#e74c3c';
-                  tdMargin.textContent = (d.marginFromAvg || 0).toFixed(1) + '%';
-                }
-
-                const tdSold = document.createElement('td');
-                tdSold.style.padding = '10px';
-                tdSold.style.borderBottom = '1px solid #f0f0f0';
-                tdSold.style.fontSize = '13px';
-                tdSold.style.color = '#555';
-                if (d.soldHistory && d.soldHistory.sold > 0) {
-                  tdSold.innerHTML = d.soldHistory.sold + ' @ $' + d.soldHistory.avg + '<br><span style="color:#999;font-size:11px">($' + d.soldHistory.low + '–$' + d.soldHistory.high + ')</span>';
-                } else {
-                  tdSold.textContent = 'no data';
-                }
-
-                const tdAvg = document.createElement('td');
-                tdAvg.style.padding = '10px';
-                tdAvg.style.borderBottom = '1px solid #f0f0f0';
-                tdAvg.style.fontSize = '13px';
-                tdAvg.style.color = '#333';
-                if (d.avgSold && d.avgSold > 0) {
-                  tdAvg.innerHTML = '$' + d.avgSold;
-                } else {
-                  tdAvg.textContent = 'no data';
-                }
-
-                // Now append in the correct order: Title, Description, Price, Profit, Margin, Sold, Avg, Link
+                // Append in order: Title, Price, Link
                 tr.appendChild(tdTitle);
-                tr.appendChild(tdDescription);
                 tr.appendChild(tdPrice);
-                tr.appendChild(tdProfit);
-                tr.appendChild(tdMargin);
-                tr.appendChild(tdSold);
-                tr.appendChild(tdAvg);
 
                 const tdLink = document.createElement('td');
                 tdLink.style.padding = '10px';
