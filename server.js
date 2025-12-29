@@ -906,7 +906,7 @@ const server = http.createServer((req, res) => {
 
                 <div class="form-group">
                   <label for="location">Location</label>
-                  <input type="text" id="location" name="location" placeholder="e.g., 37138, Nashville, 90210" required>
+                  <input type="text" id="location" name="location" placeholder="Default: 37138 (Nashville, TN)">
                 </div>
 
                 <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
@@ -1071,19 +1071,9 @@ const server = http.createServer((req, res) => {
                 titleLink.style.textDecoration = 'none';
                 titleLink.style.cursor = 'pointer';
                 titleLink.textContent = d.title || 'No title';
-                titleLink.addEventListener('click', async function(e) {
+                titleLink.addEventListener('click', function(e) {
                   e.preventDefault();
-                  // Use custom Tauri command to open URLs
-                  if (window.__TAURI_INVOKE__) {
-                    try {
-                      await window.__TAURI_INVOKE__('open_url', { url: d.link });
-                    } catch (err) {
-                      console.error('Failed to open URL:', err);
-                      window.open(d.link, '_blank');
-                    }
-                  } else {
-                    window.open(d.link, '_blank');
-                  }
+                  window.open(d.link, '_blank');
                 });
                 titleLink.addEventListener('mouseenter', function() { this.style.color = '#667eea'; this.style.textDecoration = 'underline'; });
                 titleLink.addEventListener('mouseleave', function() { this.style.color = '#333'; this.style.textDecoration = 'none'; });
@@ -1109,19 +1099,9 @@ const server = http.createServer((req, res) => {
                 a.style.color = '#667eea';
                 a.style.cursor = 'pointer';
                 a.textContent = 'Open';
-                a.addEventListener('click', async function(e) {
+                a.addEventListener('click', function(e) {
                   e.preventDefault();
-                  // Use custom Tauri command to open URLs
-                  if (window.__TAURI_INVOKE__) {
-                    try {
-                      await window.__TAURI_INVOKE__('open_url', { url: d.link });
-                    } catch (err) {
-                      console.error('Failed to open URL:', err);
-                      window.open(d.link, '_blank');
-                    }
-                  } else {
-                    window.open(d.link, '_blank');
-                  }
+                  window.open(d.link, '_blank');
                 });
                 tdLink.appendChild(a);
                 tr.appendChild(tdLink);
