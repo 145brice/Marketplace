@@ -1066,20 +1066,13 @@ const server = http.createServer((req, res) => {
                 tdTitle.style.padding = '10px';
                 tdTitle.style.borderBottom = '1px solid #f0f0f0';
                 const titleLink = document.createElement('a');
-                titleLink.href = '#';
+                titleLink.href = d.link;
+                titleLink.target = '_blank';
+                titleLink.rel = 'noopener noreferrer';
                 titleLink.style.color = '#333';
                 titleLink.style.textDecoration = 'none';
                 titleLink.style.cursor = 'pointer';
                 titleLink.textContent = d.title || 'No title';
-                titleLink.addEventListener('click', function(e) {
-                  e.preventDefault();
-                  // Open in new window/tab
-                  const newWindow = window.open(d.link, '_blank', 'noopener,noreferrer');
-                  if (!newWindow) {
-                    // Fallback: navigate in same window
-                    window.location.href = d.link;
-                  }
-                });
                 titleLink.addEventListener('mouseenter', function() { this.style.color = '#667eea'; this.style.textDecoration = 'underline'; });
                 titleLink.addEventListener('mouseleave', function() { this.style.color = '#333'; this.style.textDecoration = 'none'; });
                 tdTitle.appendChild(titleLink);
@@ -1100,20 +1093,13 @@ const server = http.createServer((req, res) => {
                 tdLink.style.padding = '10px';
                 tdLink.style.borderBottom = '1px solid #f0f0f0';
                 const a = document.createElement('a');
-                a.href = '#';
+                a.href = d.link;
+                a.target = '_blank';
+                a.rel = 'noopener noreferrer';
                 a.style.color = '#667eea';
                 a.style.cursor = 'pointer';
                 a.style.textDecoration = 'none';
                 a.textContent = 'Open';
-                a.addEventListener('click', function(e) {
-                  e.preventDefault();
-                  // Open in new window/tab
-                  const newWindow = window.open(d.link, '_blank', 'noopener,noreferrer');
-                  if (!newWindow) {
-                    // Fallback: navigate in same window
-                    window.location.href = d.link;
-                  }
-                });
                 tdLink.appendChild(a);
                 tr.appendChild(tdLink);
 
