@@ -5,8 +5,7 @@
   "build": {
     "beforeDevCommand": "npm start",
     "beforeBuildCommand": "",
-    "devUrl": "http://localhost:8020",
-    "frontendDist": "../dist"
+    "devUrl": "http://localhost:8020"
   },
   "bundle": {
     "active": true,
@@ -27,7 +26,7 @@
       "timestampUrl": ""
     },
     "macOS": {
-      "entitlements": null,
+      "entitlements": "entitlements.plist",
       "exceptionDomain": "",
       "frameworks": [],
       "providerShortName": null,
@@ -37,6 +36,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Marketplace Finder",
         "width": 1400,
         "height": 900,
@@ -46,7 +46,18 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "capabilities": [
+        {
+          "identifier": "main-capability",
+          "description": "Capability for the main window",
+          "windows": ["main"],
+          "permissions": [
+            "shell:allow-open",
+            "core:default"
+          ]
+        }
+      ]
     }
   },
   "plugins": {

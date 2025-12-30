@@ -106,15 +106,32 @@ pub fn run() {
         });
 
         // Give the server a moment to start
-        thread::sleep(Duration::from_secs(2));
+        thread::sleep(Duration::from_secs(4));
+
+        // Wait a bit more and verify server is responding
+        for _ in 0..10 {
+            if std::net::TcpStream::connect("127.0.0.1:8020").is_ok() {
+                println!("Server is ready on port 8020");
+                break;
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
     }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![greet, open_url])
-        .setup(|_app| {
+        .setup(|app| {
             println!("Tauri app setup complete");
+
+            // Open devtools for debugging
+            #[cfg(debug_assertions)]
+            {
+                let window = app.get_webview_window("main").unwrap();
+                window.open_devtools();
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())
